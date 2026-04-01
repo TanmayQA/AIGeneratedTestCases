@@ -1,0 +1,20 @@
+# Secrets
+.env
+*pat*
+*PAT*
+*.pat
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Output artifacts
+output/
+
+# OS files
+.DS_Store
+
+# Local/IDE
+.claude/
+debug_outputs/

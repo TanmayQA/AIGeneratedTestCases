@@ -1,0 +1,7 @@
+As a user, I want to log in with OTP so that I can access my account securely.
+
+Acceptance Criteria:
+1. User can enter a valid registered mobile number.
+2. OTP is sent successfully.
+3. Invalid mobile format shows an error.
+4. Expired OTP shows an error.
