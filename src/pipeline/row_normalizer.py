@@ -13,11 +13,20 @@ CSV_COLUMNS = [
     "Tags",
     "Execution Team",
     "Automation Candidate",
+    "Dependency_Type",
+    "Device_Sensitivity",
+    "Network_Sensitivity",
+    "Backend_Service",
+    "Persona_Scenario",
+    "Status",
 ]
 
 ALLOWED_PRIORITIES = {"P0", "P1", "P2"}
 ALLOWED_AUTOMATION = {"Yes", "No"}
 ALLOWED_EXECUTION_TEAMS = {"Mobile QA", "Web QA", "API QA", "Shared QA"}
+ALLOWED_DEPENDENCY_TYPES = {"Live API", "Stub", "None"}
+ALLOWED_SENSITIVITIES = {"High", "Medium", "Low"}
+ALLOWED_STATUSES = {"DRAFT", "NEEDS_REFINEMENT", "APPROVED"}
 
 ALLOWED_TYPES = {
     "Positive (UI)",
@@ -150,6 +159,134 @@ def normalize_tags(value: str, row: dict) -> str:
     return f"{suite},{layer},{risk}"
 
 
+def normalize_dependency_type(value: str, row: dict) -> str:
+    v = (value or "").strip()
+    if v in ALLOWED_DEPENDENCY_TYPES:
+        return v
+
+    steps = (row.get("Steps", "") + " " + row.get("Expected Result", "") + " " + row.get("Scenario", "")).lower()
+
+    stub_keywords = ["dummy", "static", "hardcoded", "no api call", "visual only", "sprint 1", "stub", "mock", "no real api"]
+    api_keywords = ["api", "upload", "get user profile", "jiocloud", "backend", "http", "response", "endpoint", "server"]
+
+    if any(k in steps for k in stub_keywords):
+        return "Stub"
+    if any(k in steps for k in api_keywords):
+        return "Live API"
+
+    return "None"
+
+
+def normalize_device_sensitivity(value: str, row: dict) -> str:
+    v = (value or "").strip()
+    if v in ALLOWED_SENSITIVITIES:
+        return v
+
+    combined = (row.get("Steps", "") + " " + row.get("Scenario", "") + " " + row.get("Pre-Conditions", "")).lower()
+
+    high_keywords = ["camera", "biometric", "fingerprint", "face recognition", "biometricprompt", "localauthentication",
+                     "pin", "read_media_images", "2 gb ram", "low-end", "ram", "anr", "notification"]
+    medium_keywords = ["permission", "background", "foreground", "app kill", "relaunch", "android", "ios",
+                       "datastore", "sharedpreferences"]
+
+    if any(k in combined for k in high_keywords):
+        return "High"
+    if any(k in combined for k in medium_keywords):
+        return "Medium"
+
+    return "Low"
+
+
+def normalize_network_sensitivity(value: str, row: dict) -> str:
+    v = (value or "").strip()
+    if v in ALLOWED_SENSITIVITIES:
+        return v
+
+    dep_type = row.get("Dependency_Type", "")
+
+    # Stub always means no real network traffic
+    if dep_type == "Stub":
+        return "Low"
+    if dep_type == "None":
+        return "Low"
+    if dep_type == "Live API":
+        return "High"
+
+    combined = (row.get("Steps", "") + " " + row.get("Expected Result", "") + " " + row.get("Scenario", "")).lower()
+    high_keywords = ["upload", "http", "2g", "slow network", "endpoint", "server error", "live api"]
+    if any(k in combined for k in high_keywords):
+        return "High"
+
+    return "Low"
+
+
+def normalize_backend_service(value: str, row: dict) -> str:
+    v = (value or "").strip()
+    if v and v not in {"-", "None", "none", ""}:
+        return v
+
+    combined = (row.get("Steps", "") + " " + row.get("Expected Result", "") + " " + row.get("Scenario", "")).lower()
+
+    if "get user profile" in combined:
+        return "Get User Profile API"
+    if "jiocloud upload" in combined or "upload api" in combined:
+        return "JioCloud Upload API"
+    if "backup api" in combined:
+        return "Backup API"
+    if "storage quota" in combined:
+        return "Storage Quota API"
+    if "family hub api" in combined:
+        return "Family Hub API"
+    if "jiocare" in combined:
+        return "JioCare"
+    if "datastore" in combined or "sharedpreferences" in combined:
+        return "DataStore (local)"
+
+    return "-"
+
+
+def normalize_persona_scenario(value: str, row: dict) -> str:
+    v = (value or "").strip()
+    if v and v not in {"-", "None", "none", ""}:
+        return v
+
+    combined = (row.get("Scenario", "") + " " + row.get("Steps", "")).lower()
+
+    if any(k in combined for k in ["hindi", "language", "localization"]):
+        return "Hindi-speaking user"
+    if any(k in combined for k in ["biometric", "app lock", "pin", "privacy", "security"]):
+        return "Security-conscious user"
+    if any(k in combined for k in ["2g", "slow network", "low-end", "2 gb"]):
+        return "User on low-end or slow-network device"
+    if any(k in combined for k in ["permission denied", "deny"]):
+        return "Privacy-conscious user"
+    if any(k in combined for k in ["new user", "first time", "onboard"]):
+        return "New user"
+    if any(k in combined for k in ["delete account", "log out"]):
+        return "User exiting the app"
+
+    return "Standard user"
+
+
+def normalize_status(value: str, row: dict) -> str:
+    v = (value or "").strip().upper()
+    if v in ALLOWED_STATUSES:
+        return v
+
+    expected = row.get("Expected Result", "")
+    steps = row.get("Steps", "")
+
+    vague_phrases = ["as expected", "should work", "if applicable", "as designed", "per requirement",
+                     "expected behavior", "works correctly", "functions as intended"]
+    if any(p in expected.lower() for p in vague_phrases):
+        return "NEEDS_REFINEMENT"
+
+    if len(expected.strip()) < 20 or len(steps.strip()) < 20:
+        return "NEEDS_REFINEMENT"
+
+    return "DRAFT"
+
+
 def clean_steps(value: str) -> str:
     v = (value or "").replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
     v = v.replace("`", "").replace("<", "").replace(">", "")
@@ -205,6 +342,14 @@ def normalize_row(row: dict) -> dict:
     normalized["Type"] = normalize_type(normalized["Type"], normalized)
     normalized["Execution Team"] = normalize_execution_team(normalized["Execution Team"], normalized)
     normalized["Tags"] = normalize_tags(normalized["Tags"], normalized)
+
+    # New metadata columns — derive from content if LLM didn't fill them
+    normalized["Dependency_Type"] = normalize_dependency_type(normalized["Dependency_Type"], normalized)
+    normalized["Device_Sensitivity"] = normalize_device_sensitivity(normalized["Device_Sensitivity"], normalized)
+    normalized["Network_Sensitivity"] = normalize_network_sensitivity(normalized["Network_Sensitivity"], normalized)
+    normalized["Backend_Service"] = normalize_backend_service(normalized["Backend_Service"], normalized)
+    normalized["Persona_Scenario"] = normalize_persona_scenario(normalized["Persona_Scenario"], normalized)
+    normalized["Status"] = normalize_status(normalized["Status"], normalized)
 
     if not normalized["Pre-Conditions"] or normalized["Pre-Conditions"].lower() in {"nan", "none", "-"}:
         normalized["Pre-Conditions"] = ""

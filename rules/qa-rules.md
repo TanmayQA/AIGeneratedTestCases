@@ -93,11 +93,39 @@ If behavior is unknown:
 
 All testcase tables MUST use EXACTLY this header:
 
-| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate |
+| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate | Dependency_Type | Device_Sensitivity | Network_Sensitivity | Backend_Service | Persona_Scenario | Status |
 
 Do not change column names.
 Do not reorder columns.
 Do not omit columns.
+
+New column value rules:
+
+Dependency_Type: Live API | Stub | None
+- Live API: TC exercises a real backend API
+- Stub: TC validates a dummy/hardcoded/Sprint-blocked zone (no real API call)
+- None: No backend dependency (pure local UI)
+
+Device_Sensitivity: High | Medium | Low
+- High: requires camera, biometric, specific hardware, low-end device conditions
+- Medium: requires specific OS version, runtime permissions, app lifecycle (kill/relaunch)
+- Low: pure UI, no device-specific hardware needed
+
+Network_Sensitivity: High | Medium | Low
+- High: TC exercises a live API call, file upload, or network condition
+- Medium: TC depends on connectivity but it is not the primary validation
+- Low: TC uses stub data or DataStore only
+
+Backend_Service: name of the API or service exercised, or "-" if none
+- Examples: Get User Profile API, JioCloud Upload API, DataStore (local), JioCare
+
+Persona_Scenario: brief user context for UAT/exploratory testing
+- Examples: Standard user, New user, Security-conscious user, Hindi-speaking user, User on slow network
+
+Status: DRAFT | NEEDS_REFINEMENT | APPROVED
+- DRAFT: default for all generated TCs
+- NEEDS_REFINEMENT: TC has vague expected result, missing steps, or incomplete assertions
+- APPROVED: manually reviewed and confirmed
 
 ==================================================
 - Use machine-readable format with human-friendly labels.

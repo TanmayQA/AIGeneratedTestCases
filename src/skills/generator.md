@@ -12,7 +12,7 @@ Generate full-coverage, production-ready QA test cases.
 
 ONE markdown table ONLY
 
-| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate |
+| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate | Dependency_Type | Device_Sensitivity | Network_Sensitivity | Backend_Service | Persona_Scenario | Status |
 
 ## Core Instructions
 
@@ -258,6 +258,39 @@ For each scenario above that is applicable to the requirement:
 * Type: Edge/Timeout (UI)
 * Priority: P1
 * Tags: include HIGH_RISK
+
+## Mandatory Paired-Path Rules (NEVER generate one side without the other)
+
+These pairs are always required. Generating only one side is a coverage defect:
+
+### Dialog Cancel + Confirm
+For EVERY confirmation dialog (dialogs that have a Cancel button AND a Confirm/action button):
+- **Cancel path**: tap Cancel → dialog dismisses, user stays on current screen, no state change, no API call
+- **Confirm path**: tap Confirm/action button → expected outcome described in requirements
+
+Do NOT generate only the "dialog appears" TC without also covering Cancel and Confirm paths.
+
+### Permission Granted + Permission Denied
+For EVERY OS permission request (camera, READ_MEDIA_IMAGES, contacts, biometric, notifications):
+- **Granted path**: permission granted → flow proceeds as expected
+- **Denied path**: permission denied → graceful error/guidance shown, app does not crash, flow does not proceed
+
+### Deep-Link Installed + Not Installed
+For EVERY deep-link or app-intent (e.g., Contact JioCare, share intent, in-app browser):
+- **App installed path**: deep-link fires, target app opens
+- **App NOT installed path**: fallback behavior (dialler, browser, error message) occurs
+
+### All N options of a selector
+For EVERY selector, picker, or toggle group that has N named options:
+- Generate a separate TC for each non-default option (do NOT only test the default)
+- For display modes: Dark (default), Light, System → all three need TCs
+- For language: English (default), Hindi → both selectable paths need TCs
+- For "coming soon" items: generate a non-selectable negative TC for each
+
+### Exact time-threshold tests
+For EVERY requirement that specifies a time threshold (e.g., "after 30 seconds", "within 3 seconds"):
+- The TC Steps must use the EXACT value from the requirement (not "a few seconds" or "some time")
+- Generate a TC that exceeds the threshold AND one that is below it if the behavior differs
 
 ## Deduplication Rules
 

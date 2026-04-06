@@ -77,16 +77,24 @@ Provider is selected via `MODEL_PROVIDER` env var. All providers fall back to Ol
 | `groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
 | `ollama` (default) | `OLLAMA_URL`, `OLLAMA_MODEL` |
 
-### Test Case Schema (12 columns — immutable)
+### Test Case Schema (18 columns)
 
 ```
 Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data |
-Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate
+Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate |
+Dependency_Type | Device_Sensitivity | Network_Sensitivity | Backend_Service |
+Persona_Scenario | Status
 ```
 
 - **Priority**: P0, P1, P2 only
 - **Type**: Positive/Negative UI, Edge/Timeout, State management, Performance, Integration, API validation, Security
 - **Test Data**: `key=value` format only (no JSON, no prose)
+- **Dependency_Type**: Live API | Stub | None
+- **Device_Sensitivity**: High | Medium | Low
+- **Network_Sensitivity**: High | Medium | Low
+- **Backend_Service**: API/service name or "-"
+- **Persona_Scenario**: user context (e.g., Standard user, Security-conscious user)
+- **Status**: DRAFT | NEEDS_REFINEMENT | APPROVED (default: DRAFT)
 
 ### Outputs (`output/`)
 

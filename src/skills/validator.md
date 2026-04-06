@@ -79,6 +79,17 @@ Scan the requirements for ALL prose-embedded "must NOT" constraints. For each on
 
 For each missing exclusion test — ADD a Negative (UI) testcase verifying the constraint holds.
 
+## Paired-Path Audit (MANDATORY)
+
+For every confirmation dialog, permission request, deep-link, and selector in the suite:
+
+* **Dialog Cancel path missing?** → ADD a TC: tap Cancel → dialog dismisses, user stays on screen, no state change
+* **Dialog Confirm path missing?** → ADD a TC: tap Confirm → expected outcome per requirement
+* **Permission denied path missing?** → ADD a TC: deny permission → graceful error shown, flow blocked, no crash
+* **Deep-link "not installed" path missing?** → ADD a TC: app not installed → fallback behavior (dialler/browser)
+* **Only default option tested for a selector?** → ADD a TC for each non-default option
+* **"Coming soon" items untested?** → ADD a negative TC: tap coming-soon item → no selection occurs
+
 ## Screen Navigation Audit (MANDATORY when SCREEN SEQUENCE is present in reader output)
 
 For every navigation path in the reader's SCREEN SEQUENCE:
@@ -146,23 +157,51 @@ Remove:
 ## Value Normalization
 
 Priority:
-
 * P0 / P1 / P2
-
-- If Priority is missing, default to P2. 
-- If Execution Team is missing, default to Shared QA
+- If Priority is missing, default to P2.
 
 Execution Team:
-
 * Mobile QA / Web QA / API QA / Shared QA
+- If missing, default to Shared QA
 
 Automation Candidate:
-
 * Yes / No
 
 Tags:
-
 * Exactly 3 uppercase values
+
+Dependency_Type:
+* Live API — TC exercises a real backend API
+* Stub — TC validates a dummy/hardcoded/Sprint-blocked zone
+* None — no backend dependency
+- Derive from step content if LLM did not fill it
+
+Device_Sensitivity:
+* High — camera, biometric, hardware, low-end device
+* Medium — permissions, app lifecycle, kill/relaunch
+* Low — pure local UI, DataStore only
+
+Network_Sensitivity:
+* High — live API call, upload, network condition test
+* Medium — connectivity dependent but not primary
+* Low — stub or DataStore only
+
+Backend_Service:
+* Name of the API or service exercised, or "-"
+
+Persona_Scenario:
+* Brief user context — e.g., Standard user, Security-conscious user, Hindi-speaking user
+* Default to "Standard user" if missing
+
+Status:
+* DRAFT — default for all generated TCs
+* NEEDS_REFINEMENT — flag when expected result is vague, steps are incomplete, or TC conflates multiple validations
+* APPROVED — do not assign; reserved for human review
+
+Mark a TC as NEEDS_REFINEMENT if:
+- Expected result contains phrases like "as expected", "should work", "if applicable", "as designed"
+- Steps say only "observe behavior" without specifying what to observe
+- Scenario bundles more than one independent validation intent
 
 ## Final Rules
 
