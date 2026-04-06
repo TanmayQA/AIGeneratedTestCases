@@ -120,6 +120,14 @@ def normalize_type(value: str, row: dict) -> str:
         or "low-end" in steps or "low-end" in scenario
     )
     is_security = "security" in lower_v or "auth" in scenario or "token" in scenario
+    is_state = (
+        "state management" in lower_v
+        or "no restart" in steps or "no restart" in scenario
+        or "without restart" in steps or "without restart" in scenario
+        or "applies immediately" in steps or "applies immediately" in scenario
+        or "persists" in steps or "persist" in scenario
+        or "kill" in steps or "relaunch" in steps
+    )
 
     if is_security and is_api:
         return "Security (API)"
@@ -127,6 +135,8 @@ def normalize_type(value: str, row: dict) -> str:
         return "Security (UI)"
     if is_timeout and not is_api:
         return "Edge/Timeout (UI)"
+    if is_state and not is_api and not is_negative:
+        return "State management (UI)"
     if is_api and is_negative:
         return "API validation (Negative)"
     if is_api:
@@ -172,13 +182,31 @@ def normalize_dependency_type(value: str, row: dict) -> str:
         return v
 
     steps = (row.get("Steps", "") + " " + row.get("Expected Result", "") + " " + row.get("Scenario", "")).lower()
+    pre = row.get("Pre-Conditions", "").lower()
+    combined = steps + " " + pre
 
-    stub_keywords = ["dummy", "static", "hardcoded", "no api call", "visual only", "sprint 1", "stub", "mock", "no real api"]
-    api_keywords = ["api", "upload", "get user profile", "jiocloud", "backend", "http", "response", "endpoint", "server"]
+    stub_keywords = ["dummy", "static", "hardcoded", "no api call", "visual only", "sprint 1", "stub", "mock",
+                     "no real api", "no network", "no server", "deferred", "placeholder"]
+    api_keywords = ["upload", "get user profile", "jiocloud", "backend", "http", "response", "endpoint", "server",
+                    "/api/", "rest api", "live api"]
 
-    if any(k in steps for k in stub_keywords):
+    # DataStore persistence TCs inside a stub-constrained section should be Stub, not None
+    is_datastore_persist = (
+        ("datastore" in combined or "sharedpreferences" in combined or "persists after" in combined
+         or "kill" in combined and "relaunch" in combined)
+    )
+    # Always-visible spec-mandated UI elements have no backend dependency
+    is_always_visible = (
+        "always visible" in combined or "always displayed" in combined or "always shown" in combined
+    )
+
+    if is_always_visible:
+        return "None"
+    if any(k in combined for k in stub_keywords):
         return "Stub"
-    if any(k in steps for k in api_keywords):
+    if is_datastore_persist:
+        return "Stub"
+    if any(k in combined for k in api_keywords):
         return "Live API"
 
     return "None"
@@ -290,14 +318,18 @@ def normalize_status(value: str, row: dict) -> str:
     vague_phrases = [
         "as expected", "should work", "if applicable", "as designed", "per requirement",
         "expected behavior", "works correctly", "functions as intended",
-        "appropriate", "appropriately", "correctly displays", "properly", "gracefully",
-        "as per design", "as per spec", "per spec", "may vary", "either ", " or equivalent",
+        "appropriate", "appropriately", "correctly displays", "displays correctly",
+        "properly", "gracefully", "works properly", "works correctly",
+        "as per design", "as per spec", "per spec", "may vary", "or equivalent",
+        "if it works", "works fine", "functions correctly", "behaves correctly",
+        "handled correctly", "handled properly", "shown correctly", "renders correctly",
     ]
-    if any(p in expected.lower() for p in vague_phrases):
+    exp_lower = expected.lower()
+    if any(p in exp_lower for p in vague_phrases):
         return "NEEDS_REFINEMENT"
 
     # Two-outcome Expected Results are non-deterministic
-    if " either " in expected.lower() or expected.lower().startswith("either "):
+    if " either " in exp_lower or exp_lower.startswith("either "):
         return "NEEDS_REFINEMENT"
 
     if len(expected.strip()) < 20 or len(steps.strip()) < 20:

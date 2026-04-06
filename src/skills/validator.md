@@ -84,6 +84,7 @@ For each missing exclusion test — ADD a Negative (UI) testcase verifying the c
 For every confirmation dialog, permission request, deep-link, and selector in the suite:
 
 * **Dialog Cancel path missing?** → ADD a TC: tap Cancel → dialog dismisses, user stays on screen, no state change
+* **Destructive dialog Cancel path missing (Delete Account, Clear Data, Wipe, Unlink)?** → This is NON-NEGOTIABLE. ADD a TC immediately: tap Cancel → dialog dismissed, no deletion/wipe initiated, user remains on current screen
 * **Dialog Confirm path missing?** → ADD a TC: tap Confirm → expected outcome per requirement
 * **Permission denied path missing?** → ADD a TC: deny permission → graceful error shown, flow blocked, no crash
 * **Deep-link "not installed" path missing?** → ADD a TC: app not installed → fallback behavior (dialler/browser)

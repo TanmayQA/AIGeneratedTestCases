@@ -287,6 +287,12 @@ For EVERY confirmation dialog (dialogs that have a Cancel button AND a Confirm/a
 
 Do NOT generate only the "dialog appears" TC without also covering Cancel and Confirm paths.
 
+**Destructive action dialogs (Delete Account, Clear Data, Unlink) are HIGHEST priority for this rule.**
+These are non-reversible actions — missing Cancel path = untested safeguard. Explicitly required:
+- Delete Account Step 1 dialog → Cancel: "Dialog dismissed, user stays on Profile screen, no deletion initiated"
+- Delete Account Step 2 (if exists) → Cancel: same pattern
+- Any wipe/clear/unlink dialog → Cancel path mandatory
+
 ### Permission Granted + Permission Denied
 For EVERY OS permission request (camera, READ_MEDIA_IMAGES, contacts, biometric, notifications):
 - **Granted path**: permission granted → flow proceeds as expected
@@ -330,18 +336,26 @@ Avoid:
 
 ### Test Data ↔ Expected Result Consistency (MANDATORY)
 
-If the Expected Result references ANY specific value — initials, a name, a number, a label, a count, an error message text — that value MUST also be declared in the Test Data column as `key=value` format.
+If the Expected Result references ANY specific value — initials, a name, a phone number, a label, a count, an error message text — that value MUST also be declared in the Test Data column as `key=value` format.
 
-**WRONG:**
+**WRONG (will be flagged NEEDS_REFINEMENT):**
 - Test Data: `-`, Expected Result: `"Avatar shows initials 'JD'"`
 - Test Data: `-`, Expected Result: `"Name field shows 'Amit Singh'"`
+- Test Data: `-`, Expected Result: `"Jio number displayed as '9876543210'"`
 
 **CORRECT:**
 - Test Data: `user_first_name=John; user_last_name=Doe`, Expected Result: `"Avatar shows initials 'JD'"`
 - Test Data: `user_first_name=Amit; user_last_name=Singh`, Expected Result: `"Name field shows 'Amit Singh'"`
+- Test Data: `jio_number=9876543210`, Expected Result: `"Jio number displayed as '9876543210'"`
 
-If the value is not test-data-dependent (e.g., a static UI label defined by design), write the Expected Result generically:
-- `"Avatar shows 2-character initials derived from profile first and last name"`
+**Exempt from this rule (design constants — not test inputs):**
+- Hardcoded dummy data explicitly stated in spec: "72%", "4.8 GB of 15 GB", "3 family members"
+- Static UI labels: button text, section titles
+- HTTP status codes: 200, 400, 401, 429, 500
+
+For exempt values, write Expected Result generically OR include the spec-mandated value directly:
+- `"Avatar shows 2-character initials derived from profile first and last name"` (generic)
+- `"Backup status shows hardcoded '72%' as specified in Sprint 1 stub"` (spec constant — OK)
 
 ## Expected Result Rules
 
