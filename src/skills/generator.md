@@ -200,14 +200,26 @@ Detect the screen type from the requirement. For each type present, apply its ch
   - "Phase N — not functional", "deferred to Sprint N" → verify the element is present but inert or not present at all per spec
   - "no OTP flow", "dialog only", "flow shown only" → verify only the dialog/UI renders, no backend call fires
 
+* **Sprint 1 / Stub "no API call" assertion (MANDATORY for every deferred/stub section):**
+  For EVERY section, feature, or toggle that is backed by a blocked/deferred API in Sprint 1 (Dependency_Type = Stub), you MUST generate one dedicated TC that:
+  - Triggers the relevant user interaction (tap toggle, select option, etc.)
+  - Asserts explicitly: "No network/API call is made" and "response is hardcoded/static"
+  - This applies even to UI-only sections like a language selector with deferred server-sync — saving locally must NOT trigger an API call
+  - Do NOT skip this for any stub section even if peer sections in the same screen already have it
+
 
 ## Mobile-Specific Coverage (MANDATORY when mobile/app requirements are present)
 
 For requirements involving mobile device interactions, you MUST generate test cases for:
 
-* **Device permission flows** — for every permission required (camera, READ_MEDIA_IMAGES, contacts, location, biometric), generate:
-  - Permission granted path → expected flow proceeds
-  - Permission denied path → expected graceful error/fallback
+* **Device permission flows** — for every permission required, generate BOTH granted and denied paths:
+  - **Android:** `READ_MEDIA_IMAGES`, `CAMERA`, `USE_BIOMETRIC`, contacts, location
+    - Granted path → expected flow proceeds
+    - Denied path → graceful error or Settings redirect shown, app does not crash
+  - **iOS (when app targets iOS):** `PHPhotoLibrary`, `AVCaptureDevice` (camera), `LAContext` (biometric)
+    - iOS permission request UX differs from Android — generate separate TCs for iOS granted and denied paths
+    - iOS denied → show "Go to Settings" prompt, not Android-style rationale dialog
+  - Do NOT write a single TC that covers both platforms — generate platform-specific TCs
 
 * **Device hardware interactions** — for every hardware feature invoked (camera open, gallery picker, biometric prompt, PIN entry), generate a test verifying the correct system UI opens
 
@@ -223,7 +235,12 @@ For requirements involving mobile device interactions, you MUST generate test ca
   - The UI element IS visible (if the row/section should still appear)
   - Tapping it produces NO action or navigation
 
-* **Static/dummy data screens** — for every zone using hardcoded values, generate tests verifying each hardcoded value is correct and no API call is made
+* **Static/dummy data screens** — for every zone using hardcoded values:
+  - Generate a TC verifying each hardcoded value is correct and no API call is made
+  - Steps MUST include HOW to enter/trigger that dummy state, e.g.:
+    - "Configure stub data source to serve 'done' state (ask developer to toggle build flag X)"
+    - "Verify app renders hardcoded value from the stub without any network call"
+  - NEVER write a TC for a dummy/deferred state without a reproducible setup step in Pre-Conditions or Steps
 
 ## Persistence Scope Validation (MANDATORY for every state/storage requirement)
 
@@ -311,13 +328,40 @@ Avoid:
 * placeholders like valid_otp
 * JSON format
 
+### Test Data ↔ Expected Result Consistency (MANDATORY)
+
+If the Expected Result references ANY specific value — initials, a name, a number, a label, a count, an error message text — that value MUST also be declared in the Test Data column as `key=value` format.
+
+**WRONG:**
+- Test Data: `-`, Expected Result: `"Avatar shows initials 'JD'"`
+- Test Data: `-`, Expected Result: `"Name field shows 'Amit Singh'"`
+
+**CORRECT:**
+- Test Data: `user_first_name=John; user_last_name=Doe`, Expected Result: `"Avatar shows initials 'JD'"`
+- Test Data: `user_first_name=Amit; user_last_name=Singh`, Expected Result: `"Name field shows 'Amit Singh'"`
+
+If the value is not test-data-dependent (e.g., a static UI label defined by design), write the Expected Result generically:
+- `"Avatar shows 2-character initials derived from profile first and last name"`
+
 ## Expected Result Rules
 
 Each must include:
 
-* API status code
+* API status code (when applicable)
 * Response validation
 * UI behavior
+
+### BANNED phrases in Expected Result (flag as NEEDS_REFINEMENT if used):
+
+* `appropriate` / `appropriately`
+* `correctly` / `properly` (without specifying what "correct" looks like)
+* `gracefully` (unless the graceful behavior is explicitly defined in the same sentence)
+* `either X or Y` — pick ONE deterministic outcome; if both are valid, write two separate TCs
+* `as per design` / `per spec` / `as per requirement`
+* `may` / `might` / `could`
+* `or equivalent` / `or similar`
+* `if applicable` / `if supported`
+* `as expected` / `as designed`
 
 ## Distribution Rules
 

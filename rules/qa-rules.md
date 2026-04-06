@@ -81,12 +81,24 @@ DO NOT use:
 - or equivalent
 - or similar
 - per policy
+- appropriate / appropriately
+- correctly (without defining what correct looks like)
+- properly
+- gracefully (without specifying the graceful behavior)
+- either X or Y (non-deterministic — pick one outcome or split into two TCs)
+- as per design / per spec / as per requirement
+- may / might / could
+- if it works / works fine
 
 If contract is known:
 - use exact status code / error code / response fields
 
 If behavior is unknown:
 - "Response matches the defined product/API contract"
+
+Test Data ↔ Expected Result:
+- Any specific value referenced in Expected Result (initials, name, number, label) MUST also appear in Test Data
+- If the value is design-defined (not test input), write Expected Result generically
 
 ==================================================
 4. SCHEMA RULE
@@ -116,8 +128,11 @@ Network_Sensitivity: High | Medium | Low
 - Medium: TC depends on connectivity but it is not the primary validation
 - Low: TC uses stub data or DataStore only
 
-Backend_Service: name of the API or service exercised, or "-" if none
-- Examples: Get User Profile API, JioCloud Upload API, DataStore (local), JioCare
+Backend_Service: name of the live API or service exercised, or "-" if none
+- ONLY populated when Dependency_Type = Live API
+- MUST be "-" when Dependency_Type = Stub or None — no live backend is being exercised
+- DataStore is local storage, NOT a backend service — use "-" for DataStore-only TCs
+- Examples: Get User Profile API, JioCloud Upload API, JioCare
 
 Persona_Scenario: brief user context for UAT/exploratory testing
 - Examples: Standard user, New user, Security-conscious user, Hindi-speaking user, User on slow network

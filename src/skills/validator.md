@@ -147,12 +147,30 @@ For any Requirement_ID that describes a section, card, or widget with conditiona
 * If multi-language support is specified, verify at least one test per language per screen
 * If missing — ADD them
 
+## Test Data Consistency Audit (MANDATORY)
+
+For every TC where the Expected Result contains a specific hardcoded value — an initial, name, number, label text, count, or error message string — verify that value is ALSO declared in the Test Data column:
+
+* **Missing Test Data for Expected Result value** → ADD the value to Test Data as `key=value` format, OR rewrite the Expected Result generically without the hardcoded value
+* Examples of violations to fix:
+  - Expected Result: `"Avatar shows initials 'JD'"`, Test Data: `-` → Add `user_first_name=John; user_last_name=Doe`
+  - Expected Result: `"name field shows 'Amit Singh'"`, Test Data: `-` → Add `user_first_name=Amit; user_last_name=Singh`
+  - Expected Result: `"error code 429"`, Test Data: `-` → If status code, no change needed (status codes are not test data). Only flag user-controlled input values.
+* Static design values (labels, icons, counts specified by design) are exempt — rewrite Expected Result generically if the value comes from design, not test input
+
+## Backend_Service Audit (MANDATORY)
+
+For every TC with `Dependency_Type = Stub` or `Dependency_Type = None`:
+* `Backend_Service` MUST be `-`
+* If `Backend_Service` contains an API or service name for a Stub/None TC → set it to `-`
+* Rationale: a Stub TC validates dummy/hardcoded data — there is no live backend service being exercised
+
 ## Deduplication
 
 Remove:
 
 * Exact duplicates
-* Semantic duplicates
+* Semantic duplicates — two TCs that assert the same outcome via slightly different phrasing or input variation where the validation intent is identical
 
 ## Value Normalization
 
@@ -200,6 +218,9 @@ Status:
 
 Mark a TC as NEEDS_REFINEMENT if:
 - Expected result contains phrases like "as expected", "should work", "if applicable", "as designed"
+- Expected result uses vague qualifiers: "appropriate", "appropriately", "correctly", "properly", "gracefully" without defining the exact observable outcome
+- Expected result presents two possible outcomes: "either X or Y" — non-deterministic results cannot be pass/failed
+- Expected result uses: "as per design", "per spec", "may vary", "or equivalent", "or similar", "if supported"
 - Steps say only "observe behavior" without specifying what to observe
 - Scenario bundles more than one independent validation intent
 

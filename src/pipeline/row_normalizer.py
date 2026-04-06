@@ -111,7 +111,14 @@ def normalize_type(value: str, row: dict) -> str:
 
     is_api = "api" in lower_v or "/otp/" in steps or "/profile" in steps
     is_negative = "negative" in lower_v or "error" in scenario or "invalid" in scenario or "negative" in scenario
-    is_timeout = "timeout" in lower_v or "expiry" in scenario or "expired" in scenario or "boundary" in scenario
+    is_timeout = (
+        "timeout" in lower_v or "expiry" in scenario or "expired" in scenario or "boundary" in scenario
+        or "slow network" in steps or "slow network" in scenario
+        or "slow connection" in steps or "slow connection" in scenario
+        or "2g" in steps or "2g" in scenario
+        or "degraded" in steps or "degraded" in scenario
+        or "low-end" in steps or "low-end" in scenario
+    )
     is_security = "security" in lower_v or "auth" in scenario or "token" in scenario
 
     if is_security and is_api:
@@ -221,6 +228,12 @@ def normalize_network_sensitivity(value: str, row: dict) -> str:
 
 
 def normalize_backend_service(value: str, row: dict) -> str:
+    dep_type = row.get("Dependency_Type", "")
+
+    # Stub and None TCs have no live backend service
+    if dep_type in {"Stub", "None"}:
+        return "-"
+
     v = (value or "").strip()
     if v and v not in {"-", "None", "none", ""}:
         return v
@@ -239,8 +252,6 @@ def normalize_backend_service(value: str, row: dict) -> str:
         return "Family Hub API"
     if "jiocare" in combined:
         return "JioCare"
-    if "datastore" in combined or "sharedpreferences" in combined:
-        return "DataStore (local)"
 
     return "-"
 
@@ -276,9 +287,17 @@ def normalize_status(value: str, row: dict) -> str:
     expected = row.get("Expected Result", "")
     steps = row.get("Steps", "")
 
-    vague_phrases = ["as expected", "should work", "if applicable", "as designed", "per requirement",
-                     "expected behavior", "works correctly", "functions as intended"]
+    vague_phrases = [
+        "as expected", "should work", "if applicable", "as designed", "per requirement",
+        "expected behavior", "works correctly", "functions as intended",
+        "appropriate", "appropriately", "correctly displays", "properly", "gracefully",
+        "as per design", "as per spec", "per spec", "may vary", "either ", " or equivalent",
+    ]
     if any(p in expected.lower() for p in vague_phrases):
+        return "NEEDS_REFINEMENT"
+
+    # Two-outcome Expected Results are non-deterministic
+    if " either " in expected.lower() or expected.lower().startswith("either "):
         return "NEEDS_REFINEMENT"
 
     if len(expected.strip()) < 20 or len(steps.strip()) < 20:
