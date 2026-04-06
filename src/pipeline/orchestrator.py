@@ -7,6 +7,49 @@ from src.pipeline.requirement_normalizer import normalize_azure_work_item
 from src.azure.azure_client import AzureDevOpsClient
 from src.azure.azure_parser import extract_work_item_id
 from src.models import NormalizedRequirement
+
+STAGE_ORDER = ["reader", "generator", "validator", "post_processing", "finalizer"]
+
+
+def _stage_index(stage: str) -> int:
+    try:
+        return STAGE_ORDER.index(stage)
+    except ValueError:
+        return -1
+
+
+def _save_checkpoint(
+    normalized,
+    stage_outputs: dict,
+    expected_req_ids: list,
+    coverage_checklist: dict,
+    last_completed_stage: str,
+    final_rows=None,
+):
+    Path("output").mkdir(exist_ok=True)
+    payload = {
+        "normalized": normalized.model_dump() if hasattr(normalized, "model_dump") else normalized,
+        "expected_req_ids": expected_req_ids,
+        "coverage_checklist": coverage_checklist,
+        "last_completed_stage": last_completed_stage,
+        "stage_outputs": stage_outputs,
+        "final_rows": final_rows or [],
+    }
+    Path("output/latest_run.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def load_checkpoint():
+    path = Path("output/latest_run.json")
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        # Only treat as a valid checkpoint if it has stage tracking fields
+        if "last_completed_stage" in data:
+            return data
+        return None
+    except Exception:
+        return None
 from src.pipeline.coverage_utils import (
     extract_requirement_ids_from_reader,
     extract_coverage_checklist_from_reader,
@@ -225,63 +268,92 @@ MANDATORY:
     return _rows_to_markdown(candidate_rows), candidate_rows
 
 
-def execute_pipeline(source, value, progress_callback=None, mode_variant=None, enable_suite_splitter=False):
+def execute_pipeline(source, value, progress_callback=None, mode_variant=None, enable_suite_splitter=False, resume_from_stage=None):
     from src.config import Settings
 
     assets = load_all_prompt_assets()
-    normalized = resolve_requirement(source, value)
+
+    resume_index = _stage_index(resume_from_stage) if resume_from_stage else -1
+    checkpoint = None
+
+    if resume_from_stage:
+        checkpoint = load_checkpoint()
+        if not checkpoint:
+            raise ValueError("No checkpoint found. Please run the full pipeline at least once before resuming.")
+        normalized = NormalizedRequirement(**checkpoint["normalized"])
+        expected_req_ids = checkpoint["expected_req_ids"]
+        coverage_checklist = checkpoint.get("coverage_checklist", {})
+        saved_stage_outputs = checkpoint.get("stage_outputs", {})
+        print(f"Resuming from stage: {resume_from_stage} (last completed: {checkpoint.get('last_completed_stage')})")
+    else:
+        normalized = resolve_requirement(source, value)
+        expected_req_ids = []
+        coverage_checklist = {}
+        saved_stage_outputs = {}
+
+    stage_outputs = dict(saved_stage_outputs)
 
     def tick(msg):
         if progress_callback:
             progress_callback(msg)
 
-    tick("reader")
-    reader = run_stage_with_retry(
-        assets["azure_requirement_reader"],
-        assets["rules"],
-        normalized,
-        template_text="",
-        api_contract_text=assets.get("api_contract", ""),
-    )
-    print("READER OUTPUT:\n", reader)
+    # ── Stage 1: Reader ──────────────────────────────────────────────────────
+    if resume_index <= _stage_index("reader"):
+        tick("reader")
+        reader = run_stage_with_retry(
+            assets["azure_requirement_reader"],
+            assets["rules"],
+            normalized,
+            template_text="",
+            api_contract_text=assets.get("api_contract", ""),
+        )
+        print("READER OUTPUT:\n", reader)
 
-    expected_req_ids = extract_requirement_ids_from_reader(reader)
-    if not expected_req_ids:
-        raise Exception("No Requirement_IDs extracted from reader output")
+        expected_req_ids = extract_requirement_ids_from_reader(reader)
+        if not expected_req_ids:
+            raise Exception("No Requirement_IDs extracted from reader output")
 
-    coverage_checklist = extract_coverage_checklist_from_reader(reader)
-    checklist_summary = []
-    for category, items in coverage_checklist.items():
-        if items:
-            checklist_summary.append(f"[{category.upper()}]: {len(items)} items")
-    if checklist_summary:
-        print("COVERAGE CHECKLIST EXTRACTED:", ", ".join(checklist_summary))
+        coverage_checklist = extract_coverage_checklist_from_reader(reader)
+        checklist_summary = []
+        for category, items in coverage_checklist.items():
+            if items:
+                checklist_summary.append(f"[{category.upper()}]: {len(items)} items")
+        if checklist_summary:
+            print("COVERAGE CHECKLIST EXTRACTED:", ", ".join(checklist_summary))
 
-    tick("generator")
-    raw_generator = expand_per_requirement(
-        assets,
-        assets["rules"],
-        normalized,
-        reader,
-        expected_req_ids,
-        template_text="",
-        api_contract_text=assets.get("api_contract", ""),
-    )
+        stage_outputs["reader"] = reader
+        _save_checkpoint(normalized, stage_outputs, expected_req_ids, coverage_checklist, "reader")
+    else:
+        reader = stage_outputs["reader"]
+        tick("reader")
 
-    generator = extract_best_markdown_table(raw_generator, expected_req_ids)
-    if not generator.strip():
-        raise Exception("No valid markdown table extracted from generator")
+    # ── Stage 2: Generator ───────────────────────────────────────────────────
+    if resume_index <= _stage_index("generator"):
+        tick("generator")
+        raw_generator = expand_per_requirement(
+            assets,
+            assets["rules"],
+            normalized,
+            reader,
+            expected_req_ids,
+            template_text="",
+            api_contract_text=assets.get("api_contract", ""),
+        )
 
-    final_table_text = generator
-    final_data = _normalize_final_rows(final_table_text)
-    final_source = "generator"
+        generator = extract_best_markdown_table(raw_generator, expected_req_ids)
+        if not generator.strip():
+            raise Exception("No valid markdown table extracted from generator")
 
-    try:
-        _assert_req_coverage_rows(final_data, expected_req_ids, "generator")
-    except ValueError as e:
-        print(f"⚠️ {e}. Retrying generator once with strict traceability recovery...")
+        final_table_text = generator
+        final_data = _normalize_final_rows(final_table_text)
+        final_source = "generator"
 
-        generator_retry_prompt = assets["generator"] + f"""
+        try:
+            _assert_req_coverage_rows(final_data, expected_req_ids, "generator")
+        except ValueError as e:
+            print(f"⚠️ {e}. Retrying generator once with strict traceability recovery...")
+
+            generator_retry_prompt = assets["generator"] + f"""
 
 STRICT TRACEABILITY RECOVERY:
 
@@ -296,62 +368,73 @@ MANDATORY:
 - Preserve full coverage across all Requirement_IDs
 """
 
-        raw_generator_retry = run_stage_with_retry(
-            generator_retry_prompt,
+            raw_generator_retry = run_stage_with_retry(
+                generator_retry_prompt,
+                assets["rules"],
+                normalized,
+                previous_output=reader,
+                template_text="",
+                api_contract_text=assets.get("api_contract", ""),
+            )
+
+            generator_retry = extract_best_markdown_table(raw_generator_retry, expected_req_ids)
+            if not generator_retry.strip():
+                raise Exception("No valid markdown table extracted from generator retry")
+
+            retry_data = _normalize_final_rows(generator_retry)
+            try:
+                _assert_req_coverage_rows(retry_data, expected_req_ids, "generator_retry")
+            except ValueError as e:
+                print(f"⚠️ {e}. Proceeding with partial coverage; downstream stages will attempt repair.")
+
+            generator = generator_retry
+            final_table_text = generator_retry
+            final_data = retry_data
+
+        stage_outputs["generator"] = generator
+        _save_checkpoint(normalized, stage_outputs, expected_req_ids, coverage_checklist, "generator")
+    else:
+        generator = stage_outputs["generator"]
+        final_table_text = generator
+        final_data = _normalize_final_rows(final_table_text)
+        final_source = "generator"
+        tick("generator")
+
+    # ── Stage 3: Validator ───────────────────────────────────────────────────
+    if resume_index <= _stage_index("validator"):
+        tick("validator")
+        raw_validator = run_stage_with_retry(
+            assets["validator"],
             assets["rules"],
             normalized,
-            previous_output=reader,
+            previous_output=generator,
             template_text="",
             api_contract_text=assets.get("api_contract", ""),
         )
 
-        generator_retry = extract_best_markdown_table(raw_generator_retry, expected_req_ids)
-        if not generator_retry.strip():
-            raise Exception("No valid markdown table extracted from generator retry")
+        validator = extract_best_markdown_table(raw_validator, expected_req_ids)
 
-        retry_data = _normalize_final_rows(generator_retry)
-        try:
-            _assert_req_coverage_rows(retry_data, expected_req_ids, "generator_retry")
-        except ValueError as e:
-            print(f"⚠️ {e}. Proceeding with partial coverage; downstream stages will attempt repair.")
-
-        generator = generator_retry
-        final_table_text = generator_retry
-        final_data = retry_data
-
-    tick("validator")
-    raw_validator = run_stage_with_retry(
-        assets["validator"],
-        assets["rules"],
-        normalized,
-        previous_output=generator,
-        template_text="",
-        api_contract_text=assets.get("api_contract", ""),
-    )
-
-    validator = extract_best_markdown_table(raw_validator, expected_req_ids)
-
-    if validator.strip():
-        safe, dropped = _is_table_safe_to_replace(validator, expected_req_ids)
-        if safe:
-            candidate_table = _safe_table_upgrade(final_table_text, validator, expected_req_ids)
-            candidate_data = _normalize_final_rows(candidate_table)
-            _assert_req_coverage_rows(candidate_data, expected_req_ids, "validator")
-            final_table_text = candidate_table
-            final_data = candidate_data
-            final_source = "validator"
+        if validator.strip():
+            safe, dropped = _is_table_safe_to_replace(validator, expected_req_ids)
+            if safe:
+                candidate_table = _safe_table_upgrade(final_table_text, validator, expected_req_ids)
+                candidate_data = _normalize_final_rows(candidate_table)
+                _assert_req_coverage_rows(candidate_data, expected_req_ids, "validator")
+                final_table_text = candidate_table
+                final_data = candidate_data
+                final_source = "validator"
+            else:
+                print(f"⚠️ Validator dropped REQs: {dropped}. Keeping generator output.")
         else:
-            print(f"⚠️ Validator dropped REQs: {dropped}. Keeping generator output.")
-    else:
-        print("⚠️ Validator returned no usable table. Keeping generator output.")
+            print("⚠️ Validator returned no usable table. Keeping generator output.")
 
-    present_req_ids = _find_present_req_ids(final_table_text, expected_req_ids)
-    missing_req_ids = sorted(set(expected_req_ids) - present_req_ids)
+        present_req_ids = _find_present_req_ids(final_table_text, expected_req_ids)
+        missing_req_ids = sorted(set(expected_req_ids) - present_req_ids)
 
-    if missing_req_ids:
-        print(f"⚠️ Missing REQs after validator: {missing_req_ids}. Retrying validator once...")
+        if missing_req_ids:
+            print(f"⚠️ Missing REQs after validator: {missing_req_ids}. Retrying validator once...")
 
-        validator_retry_prompt = assets["validator"] + f"""
+            validator_retry_prompt = assets["validator"] + f"""
 
 STRICT TRACEABILITY RECOVERY:
 
@@ -364,58 +447,71 @@ Preserve all existing valid rows.
 Do NOT return partial output.
 """
 
-        raw_validator_retry = run_stage_with_retry(
-            validator_retry_prompt,
-            assets["rules"],
-            normalized,
-            previous_output=final_table_text,
-            template_text="",
-            api_contract_text=assets.get("api_contract", ""),
-        )
+            raw_validator_retry = run_stage_with_retry(
+                validator_retry_prompt,
+                assets["rules"],
+                normalized,
+                previous_output=final_table_text,
+                template_text="",
+                api_contract_text=assets.get("api_contract", ""),
+            )
 
-        validator_retry = extract_best_markdown_table(raw_validator_retry, expected_req_ids)
-        if validator_retry.strip():
-            safe, dropped = _is_table_safe_to_replace(validator_retry, expected_req_ids)
-            if safe:
-                candidate_table = _safe_table_upgrade(final_table_text, validator_retry, expected_req_ids)
-                candidate_data = _normalize_final_rows(candidate_table)
-                _assert_req_coverage_rows(candidate_data, expected_req_ids, "validator_retry")
-                final_table_text = candidate_table
-                final_data = candidate_data
-                validator = validator_retry
-            else:
-                print(f"⚠️ Validator retry dropped REQs: {dropped}. Keeping previous table.")
+            validator_retry = extract_best_markdown_table(raw_validator_retry, expected_req_ids)
+            if validator_retry.strip():
+                safe, dropped = _is_table_safe_to_replace(validator_retry, expected_req_ids)
+                if safe:
+                    candidate_table = _safe_table_upgrade(final_table_text, validator_retry, expected_req_ids)
+                    candidate_data = _normalize_final_rows(candidate_table)
+                    _assert_req_coverage_rows(candidate_data, expected_req_ids, "validator_retry")
+                    final_table_text = candidate_table
+                    final_data = candidate_data
+                    validator = validator_retry
+                else:
+                    print(f"⚠️ Validator retry dropped REQs: {dropped}. Keeping previous table.")
 
-    tick("post_processing")
-    final_data = _normalize_final_rows(final_table_text)
-    try:
-        _assert_req_coverage_rows(final_data, expected_req_ids, "post_processing")
-    except ValueError as e:
-        print(f"⚠️ {e}. Proceeding to coverage repair...")
+        stage_outputs["validator"] = validator
+        stage_outputs["final_table_text"] = final_table_text
+        stage_outputs["final_source"] = final_source
+        _save_checkpoint(normalized, stage_outputs, expected_req_ids, coverage_checklist, "validator",
+                         final_rows=final_data)
+    else:
+        validator = stage_outputs.get("validator", generator)
+        final_table_text = stage_outputs.get("final_table_text", generator)
+        final_source = stage_outputs.get("final_source", "generator")
+        final_data = _normalize_final_rows(final_table_text)
+        tick("validator")
 
-    valid, errors = validate_rows(final_data)
-    if not valid:
-        raise Exception(f"Validator output failed normalization checks: {errors}")
+    # ── Stage 4: Post-Processing ─────────────────────────────────────────────
+    if resume_index <= _stage_index("post_processing"):
+        tick("post_processing")
+        final_data = _normalize_final_rows(final_table_text)
+        try:
+            _assert_req_coverage_rows(final_data, expected_req_ids, "post_processing")
+        except ValueError as e:
+            print(f"⚠️ {e}. Proceeding to coverage repair...")
 
-    weak_reqs = find_weak_requirements(expected_req_ids, final_table_text)
+        valid, errors = validate_rows(final_data)
+        if not valid:
+            raise Exception(f"Validator output failed normalization checks: {errors}")
 
-    # Also check checklist coverage and add uncovered items to the repair targets
-    checklist_gaps = check_checklist_coverage(coverage_checklist, final_table_text) if coverage_checklist else {}
-    checklist_gap_lines = []
-    for category, items in checklist_gaps.items():
-        for item in items:
-            checklist_gap_lines.append(f"  [{category.upper()}] {item}")
+        weak_reqs = find_weak_requirements(expected_req_ids, final_table_text)
 
-    if weak_reqs or checklist_gap_lines:
-        print(f"⚠️ Weak coverage detected for: {weak_reqs}. Running coverage repair...")
-        if checklist_gap_lines:
-            print(f"⚠️ Checklist gaps detected: {len(checklist_gap_lines)} uncovered items")
+        checklist_gaps = check_checklist_coverage(coverage_checklist, final_table_text) if coverage_checklist else {}
+        checklist_gap_lines = []
+        for category, items in checklist_gaps.items():
+            for item in items:
+                checklist_gap_lines.append(f"  [{category.upper()}] {item}")
 
-        weak_req_list = list(weak_reqs.keys()) if isinstance(weak_reqs, dict) else list(weak_reqs)
+        if weak_reqs or checklist_gap_lines:
+            print(f"⚠️ Weak coverage detected for: {weak_reqs}. Running coverage repair...")
+            if checklist_gap_lines:
+                print(f"⚠️ Checklist gaps detected: {len(checklist_gap_lines)} uncovered items")
 
-        checklist_section = ""
-        if checklist_gap_lines:
-            checklist_section = f"""
+            weak_req_list = list(weak_reqs.keys()) if isinstance(weak_reqs, dict) else list(weak_reqs)
+
+            checklist_section = ""
+            if checklist_gap_lines:
+                checklist_section = f"""
 
 CHECKLIST COVERAGE GAPS (items from requirements not covered by any test case):
 {chr(10).join(checklist_gap_lines)}
@@ -428,7 +524,7 @@ For each checklist gap above, you MUST add at least one test case that explicitl
 - NON_FUNCTIONAL items → add a localization or accessibility test as appropriate
 """
 
-        coverage_prompt = str(assets["coverage_regenerator"]) + f"""
+            coverage_prompt = str(assets["coverage_regenerator"]) + f"""
 
 STRICT COVERAGE REPAIR:
 
@@ -449,40 +545,47 @@ MANDATORY DISTRIBUTION RULE:
 - Do not stop with only 1 testcase for any weak Requirement_ID
 {checklist_section}"""
 
-        raw_coverage = run_stage_with_retry(
-            coverage_prompt,
-            assets["rules"],
-            normalized,
-            previous_output=final_table_text,
-            template_text="",
-            api_contract_text=assets.get("api_contract", ""),
-        )
+            raw_coverage = run_stage_with_retry(
+                coverage_prompt,
+                assets["rules"],
+                normalized,
+                previous_output=final_table_text,
+                template_text="",
+                api_contract_text=assets.get("api_contract", ""),
+            )
 
-        repair_table = extract_best_markdown_table(raw_coverage, list(weak_reqs.keys()) if isinstance(weak_reqs, dict) else list(weak_reqs))
-        if repair_table.strip():
-            repair_rows = _normalize_final_rows(repair_table)
-            final_rows = list(final_data)
-            final_rows.extend(repair_rows)
-            final_rows = normalize_rows(final_rows)
-            final_rows = [fix_expected_result(r) for r in final_rows]
-            final_rows = drop_incomplete_rows(final_rows)
-            final_rows = reassign_tc_ids(final_rows)
+            repair_table = extract_best_markdown_table(raw_coverage, list(weak_reqs.keys()) if isinstance(weak_reqs, dict) else list(weak_reqs))
+            if repair_table.strip():
+                repair_rows = _normalize_final_rows(repair_table)
+                final_rows = list(final_data)
+                final_rows.extend(repair_rows)
+                final_rows = normalize_rows(final_rows)
+                final_rows = [fix_expected_result(r) for r in final_rows]
+                final_rows = drop_incomplete_rows(final_rows)
+                final_rows = reassign_tc_ids(final_rows)
 
-            try:
-                _assert_req_coverage_rows(final_rows, expected_req_ids, "coverage_merge")
-            except ValueError as e:
-                print(f"⚠️ {e}. Coverage repair did not fully resolve missing requirements.")
+                try:
+                    _assert_req_coverage_rows(final_rows, expected_req_ids, "coverage_merge")
+                except ValueError as e:
+                    print(f"⚠️ {e}. Coverage repair did not fully resolve missing requirements.")
 
-            final_data = final_rows
-        else:
-            print("⚠️ Coverage repair returned no usable table. Keeping previous table.")
+                final_data = final_rows
+            else:
+                print("⚠️ Coverage repair returned no usable table. Keeping previous table.")
 
-    final_table_for_distribution = _rows_to_markdown(final_data)
-    weak_reqs_after_repair = find_weak_requirements(expected_req_ids, final_table_for_distribution)
+        final_table_for_distribution = _rows_to_markdown(final_data)
+        weak_reqs_after_repair = find_weak_requirements(expected_req_ids, final_table_for_distribution)
+        if weak_reqs_after_repair:
+            print(f"⚠️ Still weak after repair: {weak_reqs_after_repair}")
 
-    if weak_reqs_after_repair:
-        print(f"⚠️ Still weak after repair: {weak_reqs_after_repair}")
+        stage_outputs["post_processing_rows"] = final_data
+        _save_checkpoint(normalized, stage_outputs, expected_req_ids, coverage_checklist, "post_processing",
+                         final_rows=final_data)
+    else:
+        final_data = stage_outputs.get("post_processing_rows") or checkpoint.get("final_rows") or final_data
+        tick("post_processing")
 
+    # ── Stage 5: Finalizer ───────────────────────────────────────────────────
     tick("finalizer")
     prev_table = _rows_to_markdown(final_data)
     final_table_text, final_data = _run_finalizer_stage(
@@ -542,10 +645,14 @@ MANDATORY DISTRIBUTION RULE:
 
     run_payload = {
         "normalized": normalized.model_dump(),
+        "expected_req_ids": expected_req_ids,
+        "coverage_checklist": coverage_checklist,
+        "last_completed_stage": "finalizer",
         "stage_outputs": {
             "reader": reader,
             "generator": generator,
             "validator": validator,
+            "final_table_text": final_table_text,
             "final_source": final_source,
         },
         "final_rows": final_data,

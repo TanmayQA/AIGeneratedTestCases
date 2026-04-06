@@ -5,7 +5,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-from src.pipeline.orchestrator import execute_pipeline
+from src.pipeline.orchestrator import execute_pipeline, load_checkpoint, STAGE_ORDER
 from src.config import Settings
 
 
@@ -474,6 +474,38 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ── Resume from checkpoint ────────────────────────────────────────────────────
+_checkpoint = load_checkpoint()
+resume_stage = None
+
+if _checkpoint:
+    _last = _checkpoint.get("last_completed_stage", "")
+    _req_ids = _checkpoint.get("expected_req_ids", [])
+    _last_idx = STAGE_ORDER.index(_last) if _last in STAGE_ORDER else -1
+    _resumable_stages = STAGE_ORDER[_last_idx + 1:] if _last_idx < len(STAGE_ORDER) - 1 else []
+
+    with st.expander(f"⏩ Resume from checkpoint  (last completed: **{_last or 'none'}**)", expanded=False):
+        st.caption(f"REQ IDs from last run: {', '.join(_req_ids) if _req_ids else '—'}")
+        if _resumable_stages:
+            resume_stage = st.selectbox(
+                "Resume from stage",
+                _resumable_stages,
+                index=0,
+                help="Pipeline will skip all stages before the selected stage and reuse saved outputs.",
+            )
+            resume_btn = st.button(
+                f"▶️ Resume from {resume_stage}",
+                use_container_width=True,
+                disabled=st.session_state.is_running,
+            )
+        else:
+            st.success("Last run completed all stages. No resume needed — just re-run.")
+            resume_btn = False
+else:
+    resume_btn = False
+
+st.markdown("---")
+
 generate = st.button(
     "🚀 Launch QA Agent",
     type="primary",
@@ -481,8 +513,9 @@ generate = st.button(
     disabled=st.session_state.is_running,
 )
 
-if generate:
-    if not input_value.strip():
+if resume_btn or generate:
+    is_resume = bool(resume_btn)
+    if not is_resume and not input_value.strip():
         st.error("Please provide input before generating.")
     else:
         st.session_state.is_running = True
@@ -524,6 +557,7 @@ if generate:
                     source=source,
                     value=input_value,
                     progress_callback=progress_callback,
+                    resume_from_stage=resume_stage if is_resume else None,
                 )
 
             result["provider"] = provider_ui
