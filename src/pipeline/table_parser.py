@@ -119,13 +119,31 @@ def table_to_json(table_text: str):
         parsed.append(cleaned)
 
     header = parsed[0]
-    if header != EXPECTED_HEADERS:
+
+    # Accept tables where the LLM generated a subset of columns (e.g. 12-col
+    # output when 18 are expected). The row_normalizer fills missing columns.
+    CORE_HEADERS = EXPECTED_HEADERS[:12]
+    if header == EXPECTED_HEADERS:
+        active_headers = EXPECTED_HEADERS
+    elif header == CORE_HEADERS:
+        active_headers = CORE_HEADERS
+        print(f"⚠️ Table has {len(header)} columns instead of {len(EXPECTED_HEADERS)}. "
+              f"Missing columns will be filled by normalizer.")
+    elif set(header) <= set(EXPECTED_HEADERS) and set(CORE_HEADERS) <= set(header):
+        active_headers = header
+        print(f"⚠️ Table has partial column set ({len(header)} cols). Proceeding with normalizer fill.")
+    else:
         raise ValueError(f"Header mismatch. Expected {EXPECTED_HEADERS}, got {header}")
 
     data_rows = []
     for row in parsed[2:]:
-        if len(row) != len(EXPECTED_HEADERS):
+        if len(row) != len(active_headers):
             continue
-        data_rows.append(dict(zip(EXPECTED_HEADERS, row)))
+        row_dict = dict(zip(active_headers, row))
+        # Fill any missing EXPECTED_HEADERS columns with empty string
+        for col in EXPECTED_HEADERS:
+            if col not in row_dict:
+                row_dict[col] = ""
+        data_rows.append(row_dict)
 
     return data_rows
