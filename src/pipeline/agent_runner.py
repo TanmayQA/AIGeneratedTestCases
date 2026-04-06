@@ -6,7 +6,7 @@ from typing import Optional
 from src.config import Settings
 
 
-EXPECTED_TABLE_HEADER = "| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate |"
+EXPECTED_TABLE_HEADER = "| Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate | Dependency_Type | Device_Sensitivity | Network_Sensitivity | Backend_Service | Persona_Scenario | Status |"
 
 
 def call_ollama_llm(prompt_text: str) -> str:

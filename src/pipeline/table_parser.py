@@ -15,6 +15,12 @@ EXPECTED_HEADERS = [
     "Tags",
     "Execution Team",
     "Automation Candidate",
+    "Dependency_Type",
+    "Device_Sensitivity",
+    "Network_Sensitivity",
+    "Backend_Service",
+    "Persona_Scenario",
+    "Status",
 ]
 
 
