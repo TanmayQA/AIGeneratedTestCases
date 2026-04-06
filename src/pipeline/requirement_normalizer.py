@@ -29,7 +29,7 @@ def normalize_azure_work_item(raw: dict, source_url: str) -> NormalizedRequireme
         acceptance_criteria = description
 
     return NormalizedRequirement(
-        requirement_id=f"REQ-{work_item_id}",
+        requirement_id=str(work_item_id),
         title=title,
         description=description,
         acceptance_criteria=acceptance_criteria,

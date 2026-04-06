@@ -1,7 +1,7 @@
 import re
 from typing import Dict, List, Tuple, Optional
 
-REQ_PATTERN = re.compile(r"REQ-\d{3}")
+REQ_PATTERN = re.compile(r"REQ-\d+")
 SCENARIO_BUCKETS = [
     "positive",
     "negative",
@@ -19,6 +19,13 @@ SCENARIO_BUCKETS = [
     "ui",
     "integration",
     "network",
+    "exit_criteria",
+    "removal",
+    "analytics",
+    "localization",
+    "accessibility",
+    "lifecycle",
+    "dismissal",
 ]
 
 BUCKET_PATTERNS = {
@@ -38,7 +45,115 @@ BUCKET_PATTERNS = {
     "ui": [r"\bui\b", r"\bscreen\b", r"\bmessage\b", r"\bvalidation\b"],
     "integration": [r"\bintegration\b", r"\bdependency\b", r"\bservice\b", r"\bbackend\b"],
     "network": [r"\bnetwork\b", r"\boffline\b", r"\bslow\b", r"\bconnection\b"],
+    "exit_criteria": [r"\bexit\b", r"\bdisappear\b", r"\bhidden\b", r"\bremoved when\b", r"\bnot (be )?shown\b", r"\bno longer (visible|displayed)\b"],
+    "removal": [r"\bremoved\b", r"\bdeprecated\b", r"\babsent\b", r"\bnot present\b", r"\bshould not (appear|be visible|be shown)\b", r"\bno longer available\b"],
+    "analytics": [r"\banalytics\b", r"\bevent\b", r"\btracked\b", r"\bfires\b", r"\bct event\b", r"\bproperty\b"],
+    "localization": [r"\bhindi\b", r"\blocali[sz]ation\b", r"\blanguage\b", r"\btranslation\b", r"\bmulti.?language\b"],
+    "accessibility": [r"\baccessib\w+\b", r"\bresource.?id\b", r"\bscreen.?reader\b", r"\bcontent.?description\b"],
+    "lifecycle": [r"\brelaunch\b", r"\bapp.?kill\b", r"\bkill.?app\b", r"\bonce per session\b", r"\bonce in lifetime\b", r"\bapp.?restart\b", r"\bsession.?end\b"],
+    "dismissal": [r"\bdismiss\b", r"\bclose.?(button|card|banner)\b", r"\bclosable\b", r"\buser.?clos\b"],
 }
+
+
+def extract_coverage_checklist_from_reader(reader_output: str) -> Dict[str, List[str]]:
+    """
+    Parse the structured sections written by the reader stage into a machine-readable checklist.
+    Returns a dict with keys: entry_exit, lifecycle, removals, analytics, non_functional.
+    Each value is a list of item strings that must be covered by test cases.
+    """
+    checklist: Dict[str, List[str]] = {
+        "entry_exit": [],
+        "lifecycle": [],
+        "removals": [],
+        "analytics": [],
+        "non_functional": [],
+    }
+
+    section_patterns = {
+        "entry_exit": re.compile(
+            r"ENTRY\s*/\s*EXIT\s+CONDITIONS?:(.*?)(?=\nAPP LIFECYCLE|\nREMOVALS|\nANALYTICS|\nNON.FUNCTIONAL|\nKNOWN GAPS|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        "lifecycle": re.compile(
+            r"APP LIFECYCLE\s+CONDITIONS?:(.*?)(?=\nREMOVALS|\nANALYTICS|\nNON.FUNCTIONAL|\nKNOWN GAPS|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        "removals": re.compile(
+            r"REMOVALS.*?:(.*?)(?=\nANALYTICS|\nNON.FUNCTIONAL|\nKNOWN GAPS|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        "analytics": re.compile(
+            r"ANALYTICS\s+EVENTS?:(.*?)(?=\nNON.FUNCTIONAL|\nKNOWN GAPS|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        "non_functional": re.compile(
+            r"NON.FUNCTIONAL\s+REQUIREMENTS?:(.*?)(?=\nKNOWN GAPS|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+    }
+
+    for key, pattern in section_patterns.items():
+        match = pattern.search(reader_output)
+        if not match:
+            continue
+        block = match.group(1).strip()
+        items = []
+        for line in block.splitlines():
+            line = line.strip().lstrip("-").lstrip("*").strip()
+            if line:
+                items.append(line)
+        checklist[key] = items
+
+    return checklist
+
+
+def check_checklist_coverage(
+    checklist: Dict[str, List[str]],
+    table_text: str,
+) -> Dict[str, List[str]]:
+    """
+    For each item in the checklist, check whether at least one test case in the table
+    appears to cover it (by keyword matching the item text against Scenario + Steps + Expected Result).
+    Returns a dict of uncovered items per checklist category.
+    """
+    rows = parse_markdown_table_rows(table_text)
+    if len(rows) < 2:
+        return {k: list(v) for k, v in checklist.items()}
+
+    header = rows[0]
+    col_idx = {}
+    for col in ["Scenario", "Steps", "Expected Result", "Tags", "Type"]:
+        try:
+            col_idx[col] = header.index(col)
+        except ValueError:
+            col_idx[col] = None
+
+    def row_text(row: List[str]) -> str:
+        parts = []
+        for col in ["Scenario", "Steps", "Expected Result", "Tags", "Type"]:
+            idx = col_idx.get(col)
+            if idx is not None and len(row) > idx:
+                parts.append(row[idx])
+        return " ".join(parts).lower()
+
+    all_tc_texts = [row_text(r) for r in rows[1:]]
+
+    def _item_is_covered(item: str) -> bool:
+        keywords = [w.lower() for w in re.split(r"\W+", item) if len(w) > 3]
+        if not keywords:
+            return True
+        # require at least half the meaningful keywords to match at least one TC
+        hits = sum(1 for kw in keywords if any(kw in tc for tc in all_tc_texts))
+        return hits >= max(1, len(keywords) // 2)
+
+    uncovered: Dict[str, List[str]] = {}
+
+    for category, items in checklist.items():
+        missing = [item for item in items if not _item_is_covered(item)]
+        if missing:
+            uncovered[category] = missing
+
+    return uncovered
 
 
 def extract_requirement_ids_from_reader(reader_output: str) -> List[str]:
@@ -207,7 +322,12 @@ def calculate_coverage_score(
     return covered, total, percent
 
 
-def build_gap_summary(expected_req_ids: List[str], trace_matrix: Dict[str, List[str]], table_text: str) -> str:
+def build_gap_summary(
+    expected_req_ids: List[str],
+    trace_matrix: Dict[str, List[str]],
+    table_text: str,
+    checklist: Optional[Dict[str, List[str]]] = None,
+) -> str:
     missing = find_missing_requirements(expected_req_ids, trace_matrix)
     weak = find_weak_requirements(expected_req_ids, table_text)
 
@@ -232,5 +352,15 @@ def build_gap_summary(expected_req_ids: List[str], trace_matrix: Dict[str, List[
             lines.append(f"- {req_id}: missing {', '.join(buckets)}")
     else:
         lines.append("No partially covered requirement IDs.")
+
+    if checklist:
+        uncovered = check_checklist_coverage(checklist, table_text)
+        if uncovered:
+            lines.append("")
+            lines.append("Checklist items not covered by any test case:")
+            for category, items in uncovered.items():
+                lines.append(f"  [{category.upper()}]")
+                for item in items:
+                    lines.append(f"  - {item}")
 
     return "\n".join(lines)

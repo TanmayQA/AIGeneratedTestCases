@@ -11,8 +11,10 @@ class Settings:
     AZURE_API_VERSION = os.getenv("AZURE_API_VERSION", "7.1")
 
 
-    MODE_VARIANT = "strict"
     MODEL_PROVIDER = os.getenv("MODEL_PROVIDER", "ollama").lower()
+
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
 
     OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")

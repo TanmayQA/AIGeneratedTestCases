@@ -45,10 +45,9 @@ def init_session_state() -> None:
         st.session_state.last_uploaded_filename = ""
     if "last_run_provider" not in st.session_state:
         st.session_state.last_run_provider = Settings.MODEL_PROVIDER
-    if "last_run_mode" not in st.session_state:
-        st.session_state.last_run_mode = Settings.MODE_VARIANT
     if "last_run_source" not in st.session_state:
         st.session_state.last_run_source = "text"
+
 
 
 def get_stage_list() -> list[str]:
@@ -359,10 +358,18 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("## 🧠 Model Provider")
+    provider_options = ["anthropic", "groq", "ollama"]
+    default_index = provider_options.index(Settings.MODEL_PROVIDER) if Settings.MODEL_PROVIDER in provider_options else 0
     provider_ui = st.selectbox(
         "Choose Provider",
-        ["groq", "ollama"],
-        index=0 if Settings.MODEL_PROVIDER == "groq" else 1,
+        provider_options,
+        index=default_index,
+    )
+
+    anthropic_model_ui = st.text_input(
+        "Anthropic Model",
+        value=Settings.ANTHROPIC_MODEL,
+        disabled=(provider_ui != "anthropic"),
     )
 
     groq_model_ui = st.text_input(
@@ -375,15 +382,6 @@ with st.sidebar:
         "Ollama Model",
         value=Settings.OLLAMA_MODEL,
         disabled=(provider_ui != "ollama"),
-    )
-
-    st.markdown("---")
-    st.markdown("## 🎯 Generation Mode")
-    mode_variant = st.radio(
-        "Select Mode",
-        ["strict", "exploratory"],
-        index=0 if Settings.MODE_VARIANT == "strict" else 1,
-        help="Strict = stable production output\nExploratory = broader coverage and edge cases",
     )
 
     st.markdown("---")
@@ -408,7 +406,7 @@ with st.sidebar:
             <div class="history-card">
                 <div class="history-title">{item['title']}</div>
                 <div class="history-meta">
-                    {item['time']} • source={item['source']} • provider={item['provider']} • mode={item.get('mode', 'strict')}
+                    {item['time']} • source={item['source']} • provider={item['provider']}
                 </div>
             </div>
             """,
@@ -458,6 +456,8 @@ else:
             value=st.session_state.sample_text,
             placeholder="Paste user story, acceptance criteria, bug description, or requirement text here...",
         )
+    
+
 
 st.markdown(
     """
@@ -482,12 +482,11 @@ if generate:
         st.session_state.is_running = True
 
         Settings.MODEL_PROVIDER = provider_ui
+        Settings.ANTHROPIC_MODEL = anthropic_model_ui.strip() or Settings.ANTHROPIC_MODEL
         Settings.GROQ_MODEL = groq_model_ui.strip() or Settings.GROQ_MODEL
         Settings.OLLAMA_MODEL = ollama_model_ui.strip() or Settings.OLLAMA_MODEL
-        Settings.MODE_VARIANT = mode_variant
 
         st.session_state.last_run_provider = provider_ui
-        st.session_state.last_run_mode = mode_variant
         st.session_state.last_run_source = source
 
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
@@ -519,10 +518,10 @@ if generate:
                     source=source,
                     value=input_value,
                     progress_callback=progress_callback,
-                    mode_variant=mode_variant,
                 )
 
             result["provider"] = provider_ui
+            result["anthropic_model"] = anthropic_model_ui
             result["groq_model"] = groq_model_ui
             result["ollama_model"] = ollama_model_ui
             result["source"] = source
@@ -542,7 +541,6 @@ if generate:
                     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "source": source,
                     "provider": provider_ui,
-                    "mode": mode_variant,
                 },
             )
 
@@ -580,8 +578,6 @@ if st.session_state.pipeline_result:
     stage_outputs = result.get("stage_outputs", {})
     final_source = stage_outputs.get("final_source", "unknown")
     result_provider = result.get("provider", st.session_state.last_run_provider)
-
-    st.info(f"⚙️ Generation Mode: {result.get('mode_variant', st.session_state.last_run_mode).upper()}")
 
     st.markdown(
         f"""
@@ -660,7 +656,7 @@ if st.session_state.pipeline_result:
     if debug_mode:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         st.markdown('<div class="section-title">🔍 Stage Output Preview</div>', unsafe_allow_html=True)
-
+ 
         for stage_name, stage_output in stage_outputs.items():
             if stage_name == "final_source":
                 continue

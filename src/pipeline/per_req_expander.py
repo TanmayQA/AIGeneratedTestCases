@@ -69,10 +69,6 @@ def expand_per_requirement(
 ):
     all_outputs = []
 
-    if len(expected_req_ids) > 6:
-        print("⚠️ Too many REQs. Trimming for stability.")
-        expected_req_ids = expected_req_ids[:6]
-
     for req_id in expected_req_ids:
         print(f"🔹 Expanding for {req_id}")
 
@@ -91,16 +87,21 @@ IMPORTANT:
 
         generator_prompt = assets["generator"] + """
 
-EXPLORATORY PER-REQUIREMENT MODE:
+PER-REQUIREMENT DEEP COVERAGE MODE:
 
 - Focus ONLY on the given Requirement_ID
-- Expand deeply for this requirement
+- Read the requirement carefully and identify ALL distinct sub-behaviors, flows, and states it describes
+- Generate a separate test case for EACH distinct sub-behavior — do NOT merge them
 - Include:
-  - edge cases
-  - negative cases
-  - abuse cases
-  - boundary cases
-  - API + UI + integration where applicable
+  - Every positive flow and sub-flow explicitly mentioned
+  - Every negative/error path explicitly mentioned
+  - Every "must NOT" or "not shown" or "not functional" constraint → generate a negative test verifying it
+  - Every conditional state (e.g. done/fail/in-progress states, toggle ON/OFF, with/without permission)
+  - Every device/platform-specific interaction (camera, gallery, biometric, PIN, permission prompts)
+  - Every persistence/lifecycle behavior (DataStore, app restart, background/foreground resume)
+  - Edge cases and boundary conditions derived from the requirement
+- Minimum TCs: number of distinct sub-behaviors in the requirement, with no upper cap
+- Do NOT stop at 2–3 TCs if the requirement describes more behaviors than that
 """
 
         output = run_stage_with_retry(

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from src.pipeline.prompt_loader import load_all_prompt_assets
-from src.pipeline.orchestrator import resolve_requirement
+from src.pipeline.orchestrator import resolve_requirement, apply_mode
 from src.pipeline.agent_runner import run_stage_with_retry
 
 SOURCE = "text"
@@ -64,8 +64,9 @@ def main() -> None:
     validate_reader_output(reader)
 
     # Generator
+    generator_prompt = apply_mode(assets["generator"], Settings.MODE_VARIANT, "generator")
     generator = run_stage_with_retry(
-        assets["generator"],
+        generator_prompt,
         assets["rules"],
         normalized,
         previous_output=reader,
@@ -77,8 +78,9 @@ def main() -> None:
     validate_table_output("Generator", generator)
 
     # Validator
+    validator_prompt = apply_mode(assets["validator"], Settings.MODE_VARIANT, "validator")
     validator = run_stage_with_retry(
-        assets["validator"],
+        validator_prompt,
         assets["rules"],
         normalized,
         previous_output=generator,

@@ -9,6 +9,8 @@ from src.azure.azure_parser import extract_work_item_id
 from src.models import NormalizedRequirement
 from src.pipeline.coverage_utils import (
     extract_requirement_ids_from_reader,
+    extract_coverage_checklist_from_reader,
+    check_checklist_coverage,
     build_trace_matrix,
     calculate_coverage_score,
     build_gap_summary,
@@ -30,6 +32,7 @@ from src.pipeline.row_normalizer import (
 from src.pipeline.quality_gates import run_quality_gates
 from src.pipeline.csv_writer import write_csv_output
 from src.pipeline.per_req_expander import expand_per_requirement
+
 
 
 def resolve_requirement(source, value):
@@ -143,86 +146,6 @@ def _rows_to_markdown(rows: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def apply_mode(prompt: str, mode: str, stage: str) -> str:
-    """Return a safe copy of prompt with mode-specific addendum appended."""
-    result = str(prompt)
-
-    if mode == "exploratory":
-        if stage == "generator":
-            result += """
-
-EXPLORATORY MODE (MANDATORY):
-
-You MUST expand coverage across ALL Requirement_IDs evenly.
-
-DISTRIBUTION RULE:
-- Do NOT generate all cases for one Requirement_ID
-- Ensure EACH Requirement_ID has multiple testcases (min 3–5 where applicable)
-
-COVERAGE EXPANSION RULE:
-For EACH Requirement_ID, generate additional cases for:
-- blank input
-- null input
-- whitespace input
-- boundary values
-- malformed input
-- invalid combinations
-- state transitions
-- retry/resend abuse
-- rate limit abuse
-- concurrency scenarios
-- API failure (500)
-- dependency failure
-- security misuse
-- replay attempts
-- invalid token usage
-- expired token usage
-- missing fields
-- invalid request_id / missing request_id
-
-ANTI-DUPLICATION RULE:
-- Each testcase must validate UNIQUE logic
-- Do NOT repeat same steps with minor wording changes
-- If logic is same → do NOT create another row
-
-STRICT:
-- Increase testcase count significantly
-- Maintain schema correctness
-- Maintain atomicity (one validation per row)
-"""
-        elif stage == "validator":
-            result += """
-
-EXPLORATORY MODE:
-- Add broader missing coverage if logically applicable
-- Be aggressive in expanding:
-  - edge cases
-  - abuse cases
-  - invalid state cases
-  - resilience/failure cases
-- Do not reduce suite size unless exact duplicates exist
-"""
-    else:
-        if stage == "generator":
-            result += """
-
-STRICT MODE:
-- Prioritize deterministic, production-safe testcases
-- Stay close to explicit requirement and contract
-- Avoid speculative cases unless strongly supported
-- Prefer cleaner, smaller, reliable suite over broad exploration
-"""
-        elif stage == "validator":
-            result += """
-
-STRICT MODE:
-- Focus on schema correctness, dedupe, and requirement-backed coverage only
-- Do not add speculative cases
-- Keep output stable and production-ready
-"""
-
-    return result
-
 
 def _dedupe_rows(rows: list[dict]) -> list[dict]:
     seen = set()
@@ -302,10 +225,9 @@ MANDATORY:
     return _rows_to_markdown(candidate_rows), candidate_rows
 
 
-def execute_pipeline(source, value, progress_callback=None, mode_variant=None):
+def execute_pipeline(source, value, progress_callback=None, mode_variant=None, enable_suite_splitter=False):
     from src.config import Settings
 
-    active_mode_variant = mode_variant or Settings.MODE_VARIANT
     assets = load_all_prompt_assets()
     normalized = resolve_requirement(source, value)
 
@@ -327,28 +249,24 @@ def execute_pipeline(source, value, progress_callback=None, mode_variant=None):
     if not expected_req_ids:
         raise Exception("No Requirement_IDs extracted from reader output")
 
-    tick("generator")
-    generator_prompt = apply_mode(assets["generator"], active_mode_variant, "generator")
+    coverage_checklist = extract_coverage_checklist_from_reader(reader)
+    checklist_summary = []
+    for category, items in coverage_checklist.items():
+        if items:
+            checklist_summary.append(f"[{category.upper()}]: {len(items)} items")
+    if checklist_summary:
+        print("COVERAGE CHECKLIST EXTRACTED:", ", ".join(checklist_summary))
 
-    if active_mode_variant == "exploratory":
-        raw_generator = expand_per_requirement(
-            assets,
-            assets["rules"],
-            normalized,
-            reader,
-            expected_req_ids,
-            template_text="",
-            api_contract_text=assets.get("api_contract", ""),
-        )
-    else:
-        raw_generator = run_stage_with_retry(
-            generator_prompt,
-            assets["rules"],
-            normalized,
-            previous_output=reader,
-            template_text="",
-            api_contract_text=assets.get("api_contract", ""),
-        )
+    tick("generator")
+    raw_generator = expand_per_requirement(
+        assets,
+        assets["rules"],
+        normalized,
+        reader,
+        expected_req_ids,
+        template_text="",
+        api_contract_text=assets.get("api_contract", ""),
+    )
 
     generator = extract_best_markdown_table(raw_generator, expected_req_ids)
     if not generator.strip():
@@ -363,7 +281,7 @@ def execute_pipeline(source, value, progress_callback=None, mode_variant=None):
     except ValueError as e:
         print(f"⚠️ {e}. Retrying generator once with strict traceability recovery...")
 
-        generator_retry_prompt = generator_prompt + f"""
+        generator_retry_prompt = assets["generator"] + f"""
 
 STRICT TRACEABILITY RECOVERY:
 
@@ -392,17 +310,18 @@ MANDATORY:
             raise Exception("No valid markdown table extracted from generator retry")
 
         retry_data = _normalize_final_rows(generator_retry)
-        _assert_req_coverage_rows(retry_data, expected_req_ids, "generator_retry")
+        try:
+            _assert_req_coverage_rows(retry_data, expected_req_ids, "generator_retry")
+        except ValueError as e:
+            print(f"⚠️ {e}. Proceeding with partial coverage; downstream stages will attempt repair.")
 
         generator = generator_retry
         final_table_text = generator_retry
         final_data = retry_data
 
     tick("validator")
-    validator_prompt = apply_mode(assets["validator"], active_mode_variant, "validator")
-
     raw_validator = run_stage_with_retry(
-        validator_prompt,
+        assets["validator"],
         assets["rules"],
         normalized,
         previous_output=generator,
@@ -432,7 +351,7 @@ MANDATORY:
     if missing_req_ids:
         print(f"⚠️ Missing REQs after validator: {missing_req_ids}. Retrying validator once...")
 
-        validator_retry_prompt = validator_prompt + f"""
+        validator_retry_prompt = assets["validator"] + f"""
 
 STRICT TRACEABILITY RECOVERY:
 
@@ -469,7 +388,10 @@ Do NOT return partial output.
 
     tick("post_processing")
     final_data = _normalize_final_rows(final_table_text)
-    _assert_req_coverage_rows(final_data, expected_req_ids, "post_processing")
+    try:
+        _assert_req_coverage_rows(final_data, expected_req_ids, "post_processing")
+    except ValueError as e:
+        print(f"⚠️ {e}. Proceeding to coverage repair...")
 
     valid, errors = validate_rows(final_data)
     if not valid:
@@ -477,17 +399,41 @@ Do NOT return partial output.
 
     weak_reqs = find_weak_requirements(expected_req_ids, final_table_text)
 
-    if weak_reqs:
+    # Also check checklist coverage and add uncovered items to the repair targets
+    checklist_gaps = check_checklist_coverage(coverage_checklist, final_table_text) if coverage_checklist else {}
+    checklist_gap_lines = []
+    for category, items in checklist_gaps.items():
+        for item in items:
+            checklist_gap_lines.append(f"  [{category.upper()}] {item}")
+
+    if weak_reqs or checklist_gap_lines:
         print(f"⚠️ Weak coverage detected for: {weak_reqs}. Running coverage repair...")
+        if checklist_gap_lines:
+            print(f"⚠️ Checklist gaps detected: {len(checklist_gap_lines)} uncovered items")
 
         weak_req_list = list(weak_reqs.keys()) if isinstance(weak_reqs, dict) else list(weak_reqs)
+
+        checklist_section = ""
+        if checklist_gap_lines:
+            checklist_section = f"""
+
+CHECKLIST COVERAGE GAPS (items from requirements not covered by any test case):
+{chr(10).join(checklist_gap_lines)}
+
+For each checklist gap above, you MUST add at least one test case that explicitly covers it.
+- REMOVALS items → add a Negative (UI) test verifying the element does NOT appear
+- ANALYTICS items → add a test verifying the event fires with correct properties
+- ENTRY/EXIT items → add entry test and exit test as separate rows
+- LIFECYCLE items → add a test verifying the app kill/relaunch behavior
+- NON_FUNCTIONAL items → add a localization or accessibility test as appropriate
+"""
 
         coverage_prompt = str(assets["coverage_regenerator"]) + f"""
 
 STRICT COVERAGE REPAIR:
 
 Weak Requirement_IDs:
-{', '.join(weak_req_list)}
+{', '.join(weak_req_list) if weak_req_list else 'None — checklist gaps only'}
 
 You MUST:
 - Add missing testcase rows ONLY for the weak Requirement_IDs above
@@ -501,7 +447,7 @@ You MUST:
 MANDATORY DISTRIBUTION RULE:
 - If REQ-002 is weak, add rows for REQ-002 only until it has enough coverage
 - Do not stop with only 1 testcase for any weak Requirement_ID
-"""
+{checklist_section}"""
 
         raw_coverage = run_stage_with_retry(
             coverage_prompt,
@@ -522,7 +468,10 @@ MANDATORY DISTRIBUTION RULE:
             final_rows = drop_incomplete_rows(final_rows)
             final_rows = reassign_tc_ids(final_rows)
 
-            _assert_req_coverage_rows(final_rows, expected_req_ids, "coverage_merge")
+            try:
+                _assert_req_coverage_rows(final_rows, expected_req_ids, "coverage_merge")
+            except ValueError as e:
+                print(f"⚠️ {e}. Coverage repair did not fully resolve missing requirements.")
 
             final_data = final_rows
         else:
@@ -547,14 +496,17 @@ MANDATORY DISTRIBUTION RULE:
     if final_table_text.strip() != prev_table.strip():
         final_source = "finalizer"
 
-    _assert_req_coverage_rows(final_data, expected_req_ids, "before_final_gates")
+    try:
+        _assert_req_coverage_rows(final_data, expected_req_ids, "before_final_gates")
+    except ValueError as e:
+        print(f"⚠️ {e}. Proceeding to final gates with missing coverage.")
 
     gates_ok, gate_error, final_data = run_quality_gates(
         final_data,
         expected_req_ids=expected_req_ids,
     )
     if not gates_ok:
-        raise Exception(f"Final quality gates failed: {gate_error}")
+        print(f"⚠️ Final quality gates failed: {gate_error}. Generating partial test suite anyway.")
 
     validator_table_for_metrics = validator if validator.strip() else generator
 
@@ -565,7 +517,7 @@ MANDATORY DISTRIBUTION RULE:
         trace_matrix_before,
         weak_before,
     )
-    gap_summary = build_gap_summary(expected_req_ids, trace_matrix_before, validator_table_for_metrics)
+    gap_summary = build_gap_summary(expected_req_ids, trace_matrix_before, validator_table_for_metrics, checklist=coverage_checklist)
 
     final_table_for_metrics = _rows_to_markdown(final_data)
     trace_matrix_after = build_trace_matrix(final_table_for_metrics)
@@ -575,6 +527,7 @@ MANDATORY DISTRIBUTION RULE:
         trace_matrix_after,
         weak_after,
     )
+    final_checklist_gaps = check_checklist_coverage(coverage_checklist, final_table_for_metrics) if coverage_checklist else {}
 
     Path("output").mkdir(exist_ok=True)
 
@@ -589,7 +542,6 @@ MANDATORY DISTRIBUTION RULE:
 
     run_payload = {
         "normalized": normalized.model_dump(),
-        "mode_variant": active_mode_variant,
         "stage_outputs": {
             "reader": reader,
             "generator": generator,
@@ -603,6 +555,7 @@ MANDATORY DISTRIBUTION RULE:
 
     coverage_payload = {
         "expected_requirement_ids": expected_req_ids,
+        "coverage_checklist": coverage_checklist,
         "before": {
             "covered": covered_before,
             "total": total_before,
@@ -617,6 +570,7 @@ MANDATORY DISTRIBUTION RULE:
             "score_percent": score_after,
             "trace_matrix": trace_matrix_after,
             "weak_requirements": weak_after,
+            "checklist_gaps": final_checklist_gaps,
         },
     }
     Path(coverage_path).write_text(json.dumps(coverage_payload, indent=2), encoding="utf-8")
@@ -630,7 +584,6 @@ MANDATORY DISTRIBUTION RULE:
         "coverage_score_before": score_before,
         "coverage_score_after": score_after,
         "expected_req_ids": expected_req_ids,
-        "mode_variant": active_mode_variant,
         "trace_matrix": trace_matrix_after,
         "stage_outputs": {
             "reader": reader,

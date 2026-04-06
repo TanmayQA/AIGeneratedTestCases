@@ -19,11 +19,12 @@ source venv/bin/activate
 streamlit run app.py
 
 # Run CLI
-python src/main.py --source text --value "requirement text" --mode strict
-python src/main.py --source azure --value "https://dev.azure.com/..." --mode exploratory
+python src/main.py --source text --value "requirement text" --mode local
+python src/main.py --source azure_url --value "https://dev.azure.com/..." --mode full
 
-# Debug a single pipeline stage
+# Debug a single pipeline stage (edit SOURCE/VALUE/MODE_VARIANT at top of file)
 python debug_stage_runner.py
+# Debug outputs saved to debug_outputs/
 ```
 
 No test runner or lint commands are configured in this project.
@@ -32,14 +33,15 @@ No test runner or lint commands are configured in this project.
 
 ### Pipeline Stages (`src/pipeline/orchestrator.py`)
 
-The core is a 4-stage sequential LLM pipeline:
+The core is a 5-stage sequential LLM pipeline:
 
-1. **Reader** — Extracts atomic requirements from raw input, assigns REQ-001, REQ-002, ... identifiers. Uses `prompts/azure-requirement-reader.txt`.
-2. **Generator** — Creates a 12-column markdown table of test cases from the extracted requirements. Uses `prompts/generator.txt`. Two modes:
-   - **Strict**: Deterministic, production-safe, requirement-backed only
-   - **Exploratory**: Broader coverage including edge cases, abuse, security scenarios
-3. **Validator** — Validates coverage, deduplicates, repairs missing requirements. Uses `prompts/validator.txt`. May trigger a coverage repair loop via `prompts/coverage_regenerator.txt`.
-4. **Post-Processing** — Parses markdown table → JSON rows, normalizes fields, runs quality gates, reassigns TC_IDs, builds trace matrix and coverage summary.
+1. **Reader** — Extracts atomic requirements from raw input, assigns REQ-001, REQ-002, ... identifiers. Uses `src/skills/azure-requirement-reader.md`.
+2. **Generator** — Creates a 12-column markdown table of test cases from the extracted requirements. Uses `src/skills/generator.md`. Two modes:
+   - **Strict** (`--mode local`): Deterministic, production-safe, requirement-backed only
+   - **Exploratory** (`--mode full`): Per-requirement expansion via `per_req_expander.py`; broader edge/abuse/security coverage
+3. **Validator** — Validates coverage, deduplicates, repairs missing requirements. Uses `src/skills/validator.md`. May retry with a traceability-recovery prompt.
+4. **Post-Processing** — Parses markdown table → JSON rows, normalizes fields, runs coverage repair loop (`src/skills/coverage_regenerator.md`), runs quality gates, reassigns TC_IDs, builds trace matrix.
+5. **Finalizer** — Final LLM pass using `src/skills/finalizer.md` to ensure all Requirement_IDs are present and deduplicated before writing output.
 
 ### Key Source Files
 
@@ -47,8 +49,9 @@ The core is a 4-stage sequential LLM pipeline:
 |------|------|
 | `app.py` | Streamlit web UI (input, real-time progress, artifact downloads) |
 | `src/main.py` | CLI entry point |
-| `src/pipeline/orchestrator.py` | Orchestrates all 4 pipeline stages |
-| `src/pipeline/agent_runner.py` | LLM invocation with retry/continuation logic, supports Groq and Ollama |
+| `src/pipeline/orchestrator.py` | Orchestrates all 5 pipeline stages |
+| `src/pipeline/agent_runner.py` | LLM invocation with retry/continuation logic; supports Anthropic, Groq, Ollama |
+| `src/pipeline/per_req_expander.py` | Exploratory mode: generates test cases per requirement then merges |
 | `src/pipeline/quality_gates.py` | 6 final output validation checks |
 | `src/pipeline/coverage_utils.py` | Coverage metrics, gap detection, trace matrix |
 | `src/pipeline/table_parser.py` | Markdown table → JSON row extraction |
@@ -58,11 +61,21 @@ The core is a 4-stage sequential LLM pipeline:
 | `src/config.py` | Settings loaded from `.env` |
 | `src/models.py` | `NormalizedRequirement` Pydantic model |
 
+### Prompt / Skill Files (`src/skills/`)
+
+All LLM prompts are stored as markdown files in `src/skills/` and loaded by `src/pipeline/prompt_loader.py`. Rules from `rules/0*.md` and `rules/qa-rules.md` are concatenated and injected into every stage prompt.
+
+An optional API contract can be placed at `input/api-contract.txt` — it is automatically injected into all stage prompts if present.
+
 ### LLM Providers (`src/pipeline/agent_runner.py`)
 
-- **Primary**: Groq (`GROQ_API_KEY`, `GROQ_MODEL`)
-- **Fallback**: Ollama (`OLLAMA_URL`, `OLLAMA_MODEL`)
-- Handles rate limits with exponential backoff, incomplete outputs with continuation prompts
+Provider is selected via `MODEL_PROVIDER` env var. All providers fall back to Ollama on failure.
+
+| `MODEL_PROVIDER` | Primary keys |
+|---|---|
+| `anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` |
+| `groq` | `GROQ_API_KEY`, `GROQ_MODEL` |
+| `ollama` (default) | `OLLAMA_URL`, `OLLAMA_MODEL` |
 
 ### Test Case Schema (12 columns — immutable)
 
@@ -82,21 +95,28 @@ Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate
 - `trace_matrix.json` — Requirement-to-TC traceability
 - `coverage_summary.json` — Coverage metrics before/after repair
 
-### QA Rules
-
-The `rules/` directory contains the QA execution guidelines injected into prompts. `rules/qa-rules.md` is the primary ruleset (7 rules covering coverage types, atomicity, expected result determinism, schema enforcement, and test data format). The `rules/0*.md` files cover individual topics and are loaded by `src/pipeline/prompt_loader.py`.
-
 ## Environment Configuration (`.env`)
 
 ```
+# Azure DevOps (required for azure_url source)
 AZURE_ORG=...
 AZURE_PROJECT=...
 AZURE_PAT=...
+
+# LLM provider selection: anthropic | groq | ollama (default: ollama)
+MODEL_PROVIDER=groq
+
+# Anthropic (when MODEL_PROVIDER=anthropic)
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=claude-sonnet-4-20250514
+
+# Groq (when MODEL_PROVIDER=groq)
 GROQ_API_KEY=...
-GROQ_MODEL=llama-3.1-8b-instant
+GROQ_MODEL=llama-3.3-70b-versatile
+
+# Ollama fallback / primary
 OLLAMA_URL=http://localhost:11434
 OLLAMA_MODEL=qwen2.5:7b
+
 OUTPUT_DIR=output
-PROMPTS_DIR=prompts
-RULES_PATH=rules/qa-rules.md
 ```

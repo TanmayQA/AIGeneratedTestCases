@@ -15,10 +15,52 @@ QA RULES – STRICT EXECUTION
 - Every requirement must be covered
 
 ==================================================
-2. TEST DESIGN RULES
+1A. CONDITIONAL VISIBILITY COVERAGE (UI CARDS / SECTIONS)
 
-- One test case = ONE validation
-- Do not combine multiple validations
+For any section, card, or widget with conditional visibility rules:
+- ENTRY CRITERIA: Test that it appears when its entry condition is satisfied
+- EXIT CRITERIA: Test that it disappears when its exit condition is satisfied
+- TRANSITION: Test that the correct replacement card/section appears after exit
+- USER DISMISSAL: Test close/dismiss action if "Closable by user: Yes"
+- APP LIFECYCLE: Test behavior on app kill/relaunch if state resets
+- SESSION BEHAVIOR: Test "once per session" or "once in lifetime" guards
+
+These are NOT optional — missing any of them is a coverage gap.
+
+==================================================
+1B. FEATURE REMOVAL COVERAGE
+
+When a release removes or deprecates features:
+- Generate a NEGATIVE test for each removed item verifying it does NOT appear
+- These must be P0 for core features, P1 for secondary features
+- Scenario format: "Verify <removed feature> is absent from <screen>"
+
+==================================================
+1C. ANALYTICS EVENT COVERAGE
+
+When analytics events are specified:
+- Generate one test per event verifying it fires on the correct trigger
+- Generate one test verifying the event properties and values are correct
+- If property logic is conditional (e.g. only populated in certain cases), test each branch separately
+
+==================================================
+1D. LOCALIZATION COVERAGE
+
+When multi-language support is specified:
+- Generate at least one test per language per screen verifying UI strings render correctly
+- Cover: titles, body text, CTA labels, error messages, placeholders
+
+==================================================
+1E. ACCESSIBILITY COVERAGE
+
+When accessibility requirements are specified:
+- Generate tests verifying resource IDs are present on interactive/visible elements
+- Use Type: Positive (UI), Tags include ACCESSIBILITY
+
+==================================================
+- One test case = ONE core validation intent.
+- ATOMIC RULE: For single-function requirements, maintain one validation per row.
+- WORKFLOW/E2E RULE: For complex user journeys, multiple sequential steps (e.g. Login -> Action -> Logout) are ALLOWED if they culminate in a single primary business validation.
 - Steps must be:
   - Clear
   - Sequential
@@ -58,27 +100,24 @@ Do not reorder columns.
 Do not omit columns.
 
 ==================================================
-5. TEST DATA RULE
-
-- Use machine-readable format only
-- Use ONLY key=value format
-- Put all input values in the "Test Data" column only
-- Do NOT embed test data inside Steps
-- Do NOT use JSON
-- Do NOT use descriptive wrappers like valid_/invalid_
-- Do NOT use brackets ()
-- Do NOT use angle brackets <>
+- Use machine-readable format with human-friendly labels.
+- Format: `key=value (label)`
+- Put all input values in the "Test Data" column only.
+- Do NOT embed test data inside Steps.
+- Do NOT use JSON.
+- Do NOT use brackets () for anything other than labels.
+- Do NOT use angle brackets <>.
 
 Examples:
-- mobile=9876543210
-- otp=123456
-- request_id=valid_request_id
-- token=valid_bearer_token
+- `mobile=9876543210 (valid_registered)`
+- `otp=123456 (correct_otp)`
+- `otp=000000 (incorrect_otp)`
+- `token=bearer_token (expired)`
 
 Avoid:
-- {"mobile": "9876543210"}
-- Mobile=valid_registered_mobile (9999999999)
-- Authorization: Bearer <token>
+- `{"mobile": "9876543210"}`
+- `Mobile=valid_registered_mobile (9999999999)`
+- `Authorization: Bearer <token>`
 
 ==================================================
 6. TYPE RULE
@@ -109,10 +148,18 @@ Allowed values only:
 - EXACTLY 3 tags
 - UPPERCASE only
 
+Allowed values:
+SMOKE, REGRESSION, E2E, UI, API, SECURITY, NETWORK, STATE, ANALYTICS, LOCALIZATION, ACCESSIBILITY, REMOVAL, AUTH, HIGH_RISK, P0_FLOW, ABUSE, CONCURRENCY, INTEGRATION
+
 Format:
 - REGRESSION,API,AUTH
 - REGRESSION,UI,P0_FLOW
 - REGRESSION,NETWORK,HIGH_RISK
+- REGRESSION,UI,REMOVAL
+- REGRESSION,UI,ANALYTICS
+- REGRESSION,UI,LOCALIZATION
+- REGRESSION,UI,ACCESSIBILITY
+- REGRESSION,STATE,HIGH_RISK
 
 ==================================================
 9. EXECUTION TEAM RULE
