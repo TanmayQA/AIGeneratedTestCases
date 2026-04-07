@@ -25,6 +25,13 @@ ONE clean markdown table
 * ALL Requirement_IDs must be present
 * Add missing testcases if required
 
+## REQ-ID Accuracy Audit (MANDATORY)
+
+Wrong REQ-ID assignments to fix before returning output:
+- App Version display/non-interactive TCs → must use the App Version REQ-ID, NOT the Help & Support REQ-ID
+- WCAG / accessibility / contrast ratio TCs → must use the Theme & Display REQ-ID, NOT Privacy & Security
+- If a TC's content clearly belongs to a different section than its REQ-ID, correct it
+
 ## Atomic Rule
 
 * One testcase = one validation

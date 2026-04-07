@@ -41,73 +41,90 @@ ALLOWED_TYPES = {
     "Security (UI)",
 }
 
+# Patterns that indicate a fabricated test value in Expected Result (name, initials, phone)
+_ER_SPECIFIC_VALUE_PATTERNS = [
+    re.compile(r"'[A-Z][a-z]+\s[A-Z][a-z]+'"),   # 'First Last' name
+    re.compile(r"'[A-Z][a-z]+\s[A-Z][a-z]+\s[A-Z][a-z]+'"),  # 'First Mid Last'
+    re.compile(r"'\d{10}'"),                        # '9876543210' phone
+    re.compile(r"'[A-Z]{2}'"),                      # 'JD' initials
+    re.compile(r"'[A-Z]{3}'"),                      # 'ABC' 3-char initials
+]
+
+
+def _has_fabricated_value_in_er(row: dict) -> bool:
+    """Return True when Expected Result has a specific fabricated test value but Test Data is empty."""
+    test_data = row.get("Test Data", "").strip()
+    if test_data and test_data not in {"-", ""}:
+        return False  # Test Data provided — no issue
+    er = row.get("Expected Result", "")
+    return any(p.search(er) for p in _ER_SPECIFIC_VALUE_PATTERNS)
+
 
 def fix_column_shift(row: dict) -> dict:
     row = dict(row)
-
     if row.get("Type") in {"Yes", "No"} and not row.get("Automation Candidate"):
         row["Automation Candidate"] = row["Type"]
         row["Type"] = "Positive (UI)"
-
     return row
 
 
 def normalize_priority(value: str) -> str:
     v = (value or "").strip().upper()
-
     if v in ALLOWED_PRIORITIES:
         return v
-
     if v in {"HIGH", "H", "P"}:
         return "P1"
     if v in {"MEDIUM", "M"}:
         return "P2"
     if v in {"LOW", "L"}:
         return "P2"
-
     return "P1"
 
 
 def normalize_automation(value: str) -> str:
     v = (value or "").strip().lower()
-
     if v in {"yes", "y", "true"}:
         return "Yes"
     if v in {"no", "n", "false"}:
         return "No"
-
     return "Yes"
 
 
 def normalize_execution_team(value: str, row: dict) -> str:
     v = (value or "").strip()
-
     if v in ALLOWED_EXECUTION_TEAMS:
         return v
-
     scenario = row.get("Scenario", "").lower()
     type_val = row.get("Type", "").lower()
     steps = row.get("Steps", "").lower()
-
     if "api" in type_val or "/otp/" in steps or "/profile" in steps:
         return "API QA"
     if "web" in scenario:
         return "Web QA"
     if "ui" in type_val or "screen" in steps or "button" in steps or "input field" in steps:
         return "Mobile QA"
-
     return "Shared QA"
 
 
 def normalize_type(value: str, row: dict) -> str:
     v = (value or "").strip()
+    scenario = row.get("Scenario", "").lower()
+    steps = row.get("Steps", "").lower()
+
+    # Override Performance (UI) when it is misused for UI responsiveness/tap checks.
+    # Performance (UI) is reserved for actual load/throughput/latency benchmarks.
+    if v == "Performance (UI)":
+        is_real_performance = any(k in scenario or k in steps for k in [
+            "load time", "render time", "fps", "throughput", "latency",
+            "benchmark", "memory usage", "cpu usage",
+        ])
+        if not is_real_performance:
+            v = ""  # Fall through to inference below
 
     if v in ALLOWED_TYPES:
         return v
 
     lower_v = v.lower()
-    scenario = row.get("Scenario", "").lower()
-    steps = row.get("Steps", "").lower()
 
     is_api = "api" in lower_v or "/otp/" in steps or "/profile" in steps
     is_negative = "negative" in lower_v or "error" in scenario or "invalid" in scenario or "negative" in scenario
@@ -126,7 +143,7 @@ def normalize_type(value: str, row: dict) -> str:
         or "without restart" in steps or "without restart" in scenario
         or "applies immediately" in steps or "applies immediately" in scenario
         or "persists" in steps or "persist" in scenario
-        or "kill" in steps or "relaunch" in steps
+        or ("kill" in steps and "relaunch" in steps)
     )
 
     if is_security and is_api:
@@ -177,36 +194,53 @@ def normalize_tags(value: str, row: dict) -> str:
 
 
 def normalize_dependency_type(value: str, row: dict) -> str:
-    v = (value or "").strip()
-    if v in ALLOWED_DEPENDENCY_TYPES:
-        return v
-
     steps = (row.get("Steps", "") + " " + row.get("Expected Result", "") + " " + row.get("Scenario", "")).lower()
     pre = row.get("Pre-Conditions", "").lower()
     combined = steps + " " + pre
 
-    stub_keywords = ["dummy", "static", "hardcoded", "no api call", "visual only", "sprint 1", "stub", "mock",
-                     "no real api", "no network", "no server", "deferred", "placeholder"]
-    api_keywords = ["upload", "get user profile", "jiocloud", "backend", "http", "response", "endpoint", "server",
-                    "/api/", "rest api", "live api"]
+    # ── Override rules applied BEFORE trusting any LLM-provided value ──────
 
-    # DataStore persistence TCs inside a stub-constrained section should be Stub, not None
-    is_datastore_persist = (
-        ("datastore" in combined or "sharedpreferences" in combined or "persists after" in combined
-         or "kill" in combined and "relaunch" in combined)
-    )
-    # Always-visible spec-mandated UI elements have no backend dependency
+    # Rule 1: Always-visible spec-mandated UI elements have no backend dependency
     is_always_visible = (
         "always visible" in combined or "always displayed" in combined or "always shown" in combined
     )
-
     if is_always_visible:
         return "None"
+
+    # Rule 2: Stub context keywords → force Stub regardless of what LLM set
+    stub_keywords = [
+        "dummy", "static", "hardcoded", "no api call", "visual only", "sprint 1", "stub", "mock",
+        "no real api", "no network call", "no server call", "deferred", "placeholder",
+        "is not made", "no network", "no api", "visual-only",
+    ]
     if any(k in combined for k in stub_keywords):
         return "Stub"
-    if is_datastore_persist:
+
+    # Rule 3: DataStore persistence (kill/relaunch) without live API context → Stub
+    is_datastore_persist = (
+        ("datastore" in combined or "sharedpreferences" in combined or "persists after" in combined)
+        or ("kill" in combined and "relaunch" in combined)
+    )
+    live_api_evidence = [
+        "upload", "get user profile", "jiocloud", "backend", "/api/", "rest api",
+        "401", "500 internal", "200 ok", "http response",
+    ]
+    is_live_api_context = any(k in combined for k in live_api_evidence)
+
+    if is_datastore_persist and not is_live_api_context:
         return "Stub"
-    if any(k in combined for k in api_keywords):
+
+    # ── Trust LLM value if it passed all override rules ─────────────────────
+    v = (value or "").strip()
+    if v in ALLOWED_DEPENDENCY_TYPES:
+        return v
+
+    # ── Keyword-based inference for unset/invalid values ────────────────────
+    api_keywords = [
+        "upload", "get user profile", "jiocloud", "backend", "http", "response", "endpoint",
+        "/api/", "rest api", "live api",
+    ]
+    if is_live_api_context or any(k in combined for k in api_keywords):
         return "Live API"
 
     return "None"
@@ -219,16 +253,19 @@ def normalize_device_sensitivity(value: str, row: dict) -> str:
 
     combined = (row.get("Steps", "") + " " + row.get("Scenario", "") + " " + row.get("Pre-Conditions", "")).lower()
 
-    high_keywords = ["camera", "biometric", "fingerprint", "face recognition", "biometricprompt", "localauthentication",
-                     "pin", "read_media_images", "2 gb ram", "low-end", "ram", "anr", "notification"]
-    medium_keywords = ["permission", "background", "foreground", "app kill", "relaunch", "android", "ios",
-                       "datastore", "sharedpreferences"]
+    high_keywords = [
+        "camera", "biometric", "fingerprint", "face recognition", "biometricprompt", "localauthentication",
+        "pin", "read_media_images", "2 gb ram", "low-end", "ram", "anr", "notification",
+    ]
+    medium_keywords = [
+        "permission", "background", "foreground", "app kill", "relaunch", "android", "ios",
+        "datastore", "sharedpreferences",
+    ]
 
     if any(k in combined for k in high_keywords):
         return "High"
     if any(k in combined for k in medium_keywords):
         return "Medium"
-
     return "Low"
 
 
@@ -239,7 +276,6 @@ def normalize_network_sensitivity(value: str, row: dict) -> str:
 
     dep_type = row.get("Dependency_Type", "")
 
-    # Stub always means no real network traffic
     if dep_type == "Stub":
         return "Low"
     if dep_type == "None":
@@ -258,7 +294,7 @@ def normalize_network_sensitivity(value: str, row: dict) -> str:
 def normalize_backend_service(value: str, row: dict) -> str:
     dep_type = row.get("Dependency_Type", "")
 
-    # Stub and None TCs have no live backend service
+    # Stub and None TCs have no live backend service — always "-"
     if dep_type in {"Stub", "None"}:
         return "-"
 
@@ -308,34 +344,80 @@ def normalize_persona_scenario(value: str, row: dict) -> str:
 
 
 def normalize_status(value: str, row: dict) -> str:
-    v = (value or "").strip().upper()
-    if v in ALLOWED_STATUSES:
-        return v
-
+    """
+    ALWAYS validates Expected Result quality regardless of what the LLM set.
+    The LLM universally sets DRAFT — we must override when the ER is actually vague.
+    """
     expected = row.get("Expected Result", "")
     steps = row.get("Steps", "")
+    exp_lower = expected.lower()
+
+    # ── Quality checks run unconditionally ──────────────────────────────────
 
     vague_phrases = [
         "as expected", "should work", "if applicable", "as designed", "per requirement",
         "expected behavior", "works correctly", "functions as intended",
         "appropriate", "appropriately", "correctly displays", "displays correctly",
-        "properly", "gracefully", "works properly", "works correctly",
+        "properly", "gracefully", "works properly",
         "as per design", "as per spec", "per spec", "may vary", "or equivalent",
         "if it works", "works fine", "functions correctly", "behaves correctly",
         "handled correctly", "handled properly", "shown correctly", "renders correctly",
     ]
-    exp_lower = expected.lower()
     if any(p in exp_lower for p in vague_phrases):
         return "NEEDS_REFINEMENT"
 
-    # Two-outcome Expected Results are non-deterministic
+    # Non-deterministic two-outcome Expected Results
     if " either " in exp_lower or exp_lower.startswith("either "):
         return "NEEDS_REFINEMENT"
 
+    # Too short to be a real Expected Result
     if len(expected.strip()) < 20 or len(steps.strip()) < 20:
         return "NEEDS_REFINEMENT"
 
+    # Fabricated test values (names/initials/phone) in ER without Test Data
+    if _has_fabricated_value_in_er(row):
+        return "NEEDS_REFINEMENT"
+
+    # ── Trust LLM value after passing all checks ────────────────────────────
+    v = (value or "").strip().upper()
+    if v in ALLOWED_STATUSES:
+        return v
+
     return "DRAFT"
+
+
+def normalize_test_data(value: str) -> str:
+    v = (value or "").replace("`", "").strip()
+
+    if not v or v == "-" or v.lower() == "none":
+        return "-"
+
+    v = v.replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
+    v = re.sub(r"\(.*?\)", "", v)
+    v = v.replace("Authorization: Bearer ", "token=")
+    v = v.replace("Content-Type: application/json,", "")
+    v = v.replace("Content-Type: application/json", "")
+    v = v.replace(",", ";")
+    v = " ".join(v.split())
+
+    # Preserve ALL key=value pairs (not just whitelisted keys)
+    pairs = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+)", v)
+    if pairs:
+        cleaned = []
+        for key, val in pairs:
+            key = key.strip().lower()
+            val = val.strip()
+            if key and val and val.lower() not in {"null", ""}:
+                cleaned.append(f"{key}={val}")
+        if cleaned:
+            return ";".join(cleaned)
+
+    # Not key=value format — return as-is if meaningful
+    v = v.strip()
+    if len(v) > 2 and v != "-":
+        return v
+
+    return "-"
 
 
 def clean_steps(value: str) -> str:
@@ -348,37 +430,6 @@ def clean_expected_result(value: str) -> str:
     v = (value or "").replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
     v = v.replace("`", "")
     return " ".join(v.split())
-
-
-def normalize_test_data(value: str) -> str:
-    v = (value or "").replace("`", "").strip()
-
-    if not v or v == "-" or v.lower() == "none":
-        return "-"
-
-    v = v.replace("<br>", " ").replace("<br/>", " ").replace("<br />", " ")
-    v = re.sub(r"\(.*?\)", "", v)
-
-    v = v.replace("Authorization: Bearer ", "token=")
-    v = v.replace("Content-Type: application/json,", "")
-    v = v.replace("Content-Type: application/json", "")
-
-    v = v.replace(",", ";")
-    v = v.replace(" ", "")
-
-    pairs = re.findall(r"([A-Za-z_]+)=([^;]+)", v)
-
-    cleaned = []
-    for key, val in pairs:
-        key = key.strip().lower()
-
-        if key in {"mobile", "otp", "request_id", "token"}:
-            if val.lower() in {"null", ""}:
-                cleaned.append(f"{key}=")
-            else:
-                cleaned.append(f"{key}={val}")
-
-    return ";".join(cleaned) if cleaned else "-"
 
 
 def normalize_row(row: dict) -> dict:
@@ -394,12 +445,13 @@ def normalize_row(row: dict) -> dict:
     normalized["Execution Team"] = normalize_execution_team(normalized["Execution Team"], normalized)
     normalized["Tags"] = normalize_tags(normalized["Tags"], normalized)
 
-    # New metadata columns — derive from content if LLM didn't fill them
+    # Metadata columns — override rules run first, then trust LLM, then infer
     normalized["Dependency_Type"] = normalize_dependency_type(normalized["Dependency_Type"], normalized)
     normalized["Device_Sensitivity"] = normalize_device_sensitivity(normalized["Device_Sensitivity"], normalized)
     normalized["Network_Sensitivity"] = normalize_network_sensitivity(normalized["Network_Sensitivity"], normalized)
     normalized["Backend_Service"] = normalize_backend_service(normalized["Backend_Service"], normalized)
     normalized["Persona_Scenario"] = normalize_persona_scenario(normalized["Persona_Scenario"], normalized)
+    # Status runs last — needs final ER and Test Data values
     normalized["Status"] = normalize_status(normalized["Status"], normalized)
 
     if not normalized["Pre-Conditions"] or normalized["Pre-Conditions"].lower() in {"nan", "none", "-"}:
@@ -459,17 +511,13 @@ def normalize_rows(rows: list) -> list:
 
 def drop_incomplete_rows(rows: list) -> list:
     cleaned = []
-
     for row in rows:
         scenario = str(row.get("Scenario", "")).strip()
         steps = str(row.get("Steps", "")).strip()
         expected = str(row.get("Expected Result", "")).strip()
-
         if not scenario or not steps or not expected:
             continue
-
         cleaned.append(row)
-
     return cleaned
 
 
@@ -479,7 +527,7 @@ def reassign_tc_ids(rows: list) -> list:
     return rows
 
 
-def validate_rows(rows: list) -> tuple[bool, str]:
+def validate_rows(rows: list) -> tuple:
     if not rows:
         return False, "No rows found"
 
@@ -487,7 +535,6 @@ def validate_rows(rows: list) -> tuple[bool, str]:
         for col in CSV_COLUMNS:
             if col not in row:
                 return False, f"Row {i} missing column {col}"
-
         if not row["Requirement_ID"]:
             return False, f"Row {i} missing Requirement_ID"
         if not row["Scenario"]:

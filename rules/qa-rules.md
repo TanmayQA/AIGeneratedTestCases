@@ -177,6 +177,17 @@ Allowed values only:
 - Security (API)
 - Security (UI)
 
+Performance (UI) usage restriction:
+- ONLY for actual load/throughput/latency benchmarks: render time, FPS, memory usage
+- NOT for toggle tap responsiveness, button tap speed, or any functional UI check
+- Wrong: "Verify toggles are tappable and responsive" → Performance (UI) ❌
+- Right: "Verify toggles are tappable and responsive" → Positive (UI) ✓
+
+REQ-ID accuracy:
+- App Version display TCs → App Version REQ-ID only
+- WCAG/accessibility TCs → Theme & Display REQ-ID only
+- Never file a TC under the wrong section's REQ-ID
+
 ==================================================
 7. PRIORITY RULE
 

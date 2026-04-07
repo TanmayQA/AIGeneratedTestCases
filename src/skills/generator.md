@@ -14,6 +14,38 @@ ONE markdown table ONLY
 
 | Requirement_ID | TC_ID | Scenario | Pre-Conditions | Steps | Test Data | Expected Result | Priority | Type | Tags | Execution Team | Automation Candidate | Dependency_Type | Device_Sensitivity | Network_Sensitivity | Backend_Service | Persona_Scenario | Status |
 
+## HARD RULES (violations cause automatic NEEDS_REFINEMENT status)
+
+### HARD RULE 1 — Test Data ↔ Expected Result
+If Expected Result references a specific value that is a TEST INPUT (name, initials, phone number, ID, token):
+- That value MUST appear in Test Data as `key=value`
+- `Test Data = -` with a specific test-input value in Expected Result = VIOLATION
+- WRONG: `Test Data: -` / `Expected Result: "Avatar shows initials 'JD'"`
+- CORRECT: `Test Data: user_first_name=John; user_last_name=Doe` / `Expected Result: "Avatar shows initials 'JD'"`
+- EXEMPT: Design constants (hardcoded spec values like "72%", "4.8 GB", button labels, HTTP status codes)
+
+### HARD RULE 2 — No vague Expected Results
+Expected Result MUST be a single, deterministic, measurable outcome.
+BANNED: `appropriate`, `correctly`, `properly`, `gracefully`, `either X or Y`, `as per design`, `per spec`, `may`, `might`, `reasonable`, `works fine`
+
+### HARD RULE 3 — REQ-ID accuracy
+- App Version display TCs → use the REQ-ID for App Version (NOT the Help & Support REQ-ID)
+- WCAG / accessibility TCs → use the REQ-ID for Theme & Display (NOT Privacy & Security)
+- Never assign a TC to the wrong section's REQ-ID
+
+### HARD RULE 4 — Performance (UI) type restriction
+`Performance (UI)` is ONLY for actual load/throughput/latency benchmarks (e.g., "renders in < 2 seconds", "FPS stays above 60").
+DO NOT use `Performance (UI)` for:
+- Toggle tap responsiveness → use `Positive (UI)`
+- Button tap response time → use `Positive (UI)` or `Edge/Timeout (UI)`
+- Any non-benchmark UI behaviour
+
+### HARD RULE 5 — Always-visible elements have Dependency_Type = None
+If a UI element is described as "always visible", "always shown", or "always displayed" regardless of API state:
+- `Dependency_Type = None`
+- `Backend_Service = -`
+- Do NOT assign `Live API` to a permanently visible decorative/structural element
+
 ## Core Instructions
 
 * Cover ALL Requirement_IDs
